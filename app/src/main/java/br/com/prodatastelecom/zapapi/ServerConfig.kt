@@ -1,7 +1,6 @@
 package br.com.prodatastelecom.zapapi
 
 import android.content.Context
-import android.net.Uri
 import java.net.URI
 
 data class ServerConfig(
