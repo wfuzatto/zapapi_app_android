@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Firebase client identifiers from the user's google-services.json.
+         Google Android API keys are not credentials for server FCM sends.
+         Restrict this key to approved APIs and app identifiers in Google Cloud. -->
+    <string name="google_app_id" translatable="false">1:364630688187:android:8caf5233e41f72eb26c49e</string>
+    <string name="gcm_defaultSenderId" translatable="false">364630688187</string>
+    <string name="project_id" translatable="false">zapapi-ffc8b</string>
+    <string name="google_storage_bucket" translatable="false">zapapi-ffc8b.firebasestorage.app</string>
+    <string name="google_api_key" translatable="false">AIzaSyC3vSsqXJm5MXzgqK6MkqdMDyOEHvMfjPQ</string>
+</resources>
