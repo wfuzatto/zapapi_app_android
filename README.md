@@ -24,3 +24,10 @@ Veja `docs/BACKEND_CONTRACT.md` para os endpoints necessários e política de se
 ## Próxima etapa
 
 Implementar o adaptador `/mobile-api/v1/` no servidor da V1 com autenticação de usuário, isolamento tenant e políticas de 24 horas / templates da Meta. Não reutilizar cookies web nem entregar tokens da Cloud API ao dispositivo.
+
+
+## Android v1.0.0 — ZapApi Messenger
+
+O APK de teste é compilado pelo GitHub Actions após cada push e aparece em **Actions → Android — compilação debug → Artifacts → zapapi-messenger-debug**. A V2 não foi modificada. O endpoint inicial é `https://zapapi.inf.br/mobile-api/v1/`, configurável pela engrenagem no login; alterar o servidor invalida a sessão local. O backend V1 possui login de tenant, conversas, contatos e templates aprovados. Configurar o FCM é opcional para compilar; o backend precisa de infraestrutura própria para enviar pushes.
+
+O APK gerado no CI é **debug assinado com chave de desenvolvimento**, adequado para instalação interna/teste, não para Play Store. 

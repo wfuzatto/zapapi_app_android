@@ -22,6 +22,6 @@ jobs:
       - name: Disponibilizar APK de teste
         uses: actions/upload-artifact@v4
         with:
-          name: ponte-mobile-debug
+          name: zapapi-messenger-debug
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error

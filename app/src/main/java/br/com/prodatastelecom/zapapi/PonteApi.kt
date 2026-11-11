@@ -20,6 +20,10 @@ import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
+data class ZapAccount(val id:Int,val name:String,val phoneNumberId:String)
+data class ZapContact(val phone:String,val name:String,val accountId:Int)
+data class ZapTemplate(val name:String,val language:String,val category:String,val body:String,val variables:Int,val accountId:Int)
+
 data class ChatSummary(
     val id: String,
     val name: String,
@@ -107,7 +111,7 @@ class PonteApi(private val session: SecureSession, private val settings: ServerC
                 val raw = response.body?.string().orEmpty()
                 if (cfg.debugMode) {
                     // Sem cabeçalhos secretos, corpo ou senha nos logs.
-                    android.util.Log.d("PonteAPI", method + " " + cfg.apiPrefix + "/" + path +
+                    android.util.Log.d("ZapApiAPI", method + " " + cfg.apiPrefix + "/" + path +
                         " -> HTTP " + response.code)
                 }
                 if (response.code in 300..399) {
@@ -156,8 +160,9 @@ class PonteApi(private val session: SecureSession, private val settings: ServerC
             }
         }
         val site = probe("Site HTTPS", cfg.baseUrl + "/")
+        val health = probe("API móvel: saúde", cfg.endpoint("health"))
         val login = probe("API móvel: login (GET sem credenciais)", cfg.endpoint(cfg.loginPath))
-        site + "\n\n" + login + "\n\nO teste não envia a senha. Para login no app, a V1 " +
+        site + "\n\n" + health + "\n\n" + login + "\n\nO teste não envia a senha. O ZapApi " +
             "precisa responder JSON em /" + cfg.apiPrefix + "/" + cfg.loginPath +
             ". HTTP 302 não é sucesso de autenticação."
     }
@@ -205,6 +210,48 @@ class PonteApi(private val session: SecureSession, private val settings: ServerC
     suspend fun registerDevice(fcmToken: String) {
         request(settings.load().pushPath, "POST",
             JSONObject().put("platform", "android").put("fcm_token", fcmToken))
+    }
+
+    suspend fun accounts(): List<ZapAccount> {
+        val items=request("accounts").optJSONArray("data") ?: JSONArray()
+        return (0 until items.length()).mapNotNull { index ->
+            val item=items.optJSONObject(index) ?: return@mapNotNull null
+            val id=item.optInt("id")
+            if(id<=0)return@mapNotNull null
+            ZapAccount(id,item.optString("name"),item.optString("phone_number_id"))
+        }
+    }
+    suspend fun contacts(): List<ZapContact> {
+        val items=request(settings.load().contactsPath).optJSONArray("data") ?: JSONArray()
+        return (0 until items.length()).mapNotNull { index ->
+            val item=items.optJSONObject(index) ?: return@mapNotNull null
+            val phone=item.optString("phone")
+            if(phone.isBlank())return@mapNotNull null
+            ZapContact(phone,item.optString("name").ifBlank { phone },item.optInt("account_id"))
+        }
+    }
+    suspend fun templates(accountId: Int): List<ZapTemplate> {
+        val data=request("templates?account_id="+accountId)
+        val arr=data.optJSONArray("data") ?: JSONArray()
+        return (0 until arr.length()).mapNotNull { index ->
+            val item=arr.optJSONObject(index) ?: return@mapNotNull null
+            val name=item.optString("name")
+            if(name.isBlank())return@mapNotNull null
+            ZapTemplate(name,item.optString("language"),item.optString("category"),
+                item.optString("body"),item.optInt("variables"),item.optInt("account_id"))
+        }
+    }
+    suspend fun sendTemplate(conversationId:String,template:ZapTemplate,values:List<String>) {
+        val id=URLEncoder.encode(conversationId,"UTF-8")
+        val payload=JSONObject().put("name",template.name).put("language",template.language)
+            .put("parameters",JSONArray(values))
+        request("conversations/$id/templates","POST",payload)
+    }
+    suspend fun createConversation(phone:String,accountId:Int):String {
+        val result=request(settings.load().createPath,"POST",
+            JSONObject().put("phone",phone).put("account_id",accountId))
+        return result.optString("id").takeIf { it.isNotBlank() }
+            ?: throw ApiException(502,"A API não retornou o ID da conversa.")
     }
 
     suspend fun logout() {

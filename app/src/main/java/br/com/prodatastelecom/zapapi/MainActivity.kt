@@ -130,10 +130,10 @@ private fun LoginScreen(api: PonteApi, session: SecureSession, onLogin: () -> Un
         verticalArrangement = Arrangement.Center
     ) {
         Box(Modifier.size(68.dp).clip(RoundedCornerShape(18.dp)).background(Green), contentAlignment = Alignment.Center) {
-            Text("P", fontSize = 38.sp, fontWeight = FontWeight.Bold, color = Color.White)
+            Icon(Icons.Default.Forum, contentDescription = "ZapApi", tint = Color.White, modifier = Modifier.size(42.dp))
         }
         Spacer(Modifier.height(22.dp))
-        Text("Ponte", fontSize = 32.sp, fontWeight = FontWeight.Bold, color = Ink)
+        Text("ZapApi Messenger", fontSize = 32.sp, fontWeight = FontWeight.Bold, color = Ink)
         Text("Suas conversas comerciais em qualquer lugar", color = Color.Gray)
         Spacer(Modifier.height(30.dp))
         OutlinedTextField(value = email, onValueChange = { email = it }, label = { Text("E-mail") },
@@ -165,7 +165,7 @@ private fun LoginScreen(api: PonteApi, session: SecureSession, onLogin: () -> Un
             else Text("Entrar")
         }
         Spacer(Modifier.height(15.dp))
-        Text("Use sua conta da plataforma Ponte. Suas credenciais da Meta ficam somente no servidor.",
+        Text("Entre com sua conta ZapApi. O token da Meta permanece protegido no servidor.",
             fontSize = 12.sp, color = Color.Gray)
     }
     IconButton(onClick = onSettings, modifier = Modifier.align(Alignment.TopEnd).padding(16.dp)) {
@@ -189,6 +189,15 @@ private fun HomeScreen(api: PonteApi, refreshKey: Int, onChat: (ChatSummary) -> 
     var newPhone by remember { mutableStateOf("") }
     var creating by remember { mutableStateOf(false) }
     var menu by remember { mutableStateOf(false) }
+    var tab by remember { mutableIntStateOf(0) }
+    var accounts by remember { mutableStateOf<List<ZapAccount>>(emptyList()) }
+    var accountSelected by remember { mutableIntStateOf(0) }
+    LaunchedEffect(newChat) {
+        if(newChat)try{
+            accounts=api.accounts()
+            accountSelected=accounts.firstOrNull()?.id ?: 0
+        }catch(e:Exception){error=e.message}
+    }
     LaunchedEffect(refreshKey) {
         while (isActive) {
             try {
@@ -204,13 +213,13 @@ private fun HomeScreen(api: PonteApi, refreshKey: Int, onChat: (ChatSummary) -> 
     }
     Scaffold(topBar = {
         Column {
-            Row(Modifier.fillMaxWidth().background(Color.White).padding(horizontal = 16.dp, vertical = 12.dp),
+            Row(Modifier.fillMaxWidth().background(Color(0xFF053D30)).padding(horizontal = 16.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically) {
-                Text("Ponte", fontWeight = FontWeight.Bold, color = Green, fontSize = 27.sp, modifier = Modifier.weight(1f))
-                IconButton(onClick = onRefresh) { Icon(Icons.Default.Refresh, "Atualizar") }
-                IconButton(onClick = onSettings) { Icon(Icons.Default.Settings, "Configurações do servidor") }
+                Text("ZapApi", fontWeight = FontWeight.Bold, color = Color.White, fontSize = 27.sp, modifier = Modifier.weight(1f))
+                IconButton(onClick = onRefresh) { Icon(Icons.Default.Refresh, "Atualizar", tint=Color.White) }
+                IconButton(onClick = onSettings) { Icon(Icons.Default.Settings, "Configurações do servidor", tint=Color.White) }
                 Box {
-                    IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, "Mais opções") }
+                    IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, "Mais opções", tint=Color.White) }
                     DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                         DropdownMenuItem(text = { Text("Sair da conta") }, onClick = { menu = false; onLogout() })
                     }
@@ -227,11 +236,27 @@ private fun HomeScreen(api: PonteApi, refreshKey: Int, onChat: (ChatSummary) -> 
             HorizontalDivider(color = Color(0xFFF0F1EF))
         }
     }, floatingActionButton = {
-        FloatingActionButton(onClick = { newChat = true }, containerColor = Green, contentColor = Color.White) {
-            Icon(Icons.Default.AddComment, "Iniciar conversa")
+        if(tab==0) FloatingActionButton(onClick={newChat=true},
+            containerColor=Green,contentColor=Color.White) {
+            Icon(Icons.Default.AddComment,"Iniciar conversa")
+        }
+    }, bottomBar = {
+        NavigationBar(containerColor=Color(0xFFF6FAF7)) {
+            val titles=listOf("Conversas","Contatos","Templates","Mais")
+            val icons=listOf(Icons.Default.Chat,Icons.Default.People,
+                Icons.Default.Description,Icons.Default.Apps)
+            titles.forEachIndexed { index,title ->
+                NavigationBarItem(selected=tab==index,onClick={tab=index},
+                    icon={Icon(icons[index],contentDescription=title)},
+                    label={Text(title,fontSize=10.sp)},alwaysShowLabel=true)
+            }
         }
     }) { padding ->
-        Column(Modifier.padding(padding).fillMaxSize()) {
+        if(tab!=0) {
+            Box(Modifier.padding(padding).fillMaxSize()){
+                ZapExtras(tab,api,onChat,onSettings)
+            }
+        } else Column(Modifier.padding(padding).fillMaxSize()) {
             if (error != null) {
                 Text("Não foi possível atualizar: $error", color = MaterialTheme.colorScheme.error,
                     modifier = Modifier.padding(16.dp))
@@ -291,6 +316,22 @@ private fun HomeScreen(api: PonteApi, refreshKey: Int, onChat: (ChatSummary) -> 
             text = {
                 Column {
                     Text("Informe o número com código do país, sem + ou espaços.", fontSize = 13.sp)
+                    if(accounts.size>1) {
+                        var expanded by remember { mutableStateOf(false) }
+                        Box {
+                            OutlinedButton(onClick={expanded=true}){
+                                Text(accounts.find{it.id==accountSelected}?.name?:"Selecionar número")
+                                Icon(Icons.Default.ArrowDropDown,null)
+                            }
+                            DropdownMenu(expanded=expanded,onDismissRequest={expanded=false}){
+                                accounts.forEach { a ->
+                                    DropdownMenuItem(text={Text(a.name)},onClick={
+                                        accountSelected=a.id;expanded=false
+                                    })
+                                }
+                            }
+                        }
+                    }
                     Spacer(Modifier.height(12.dp))
                     OutlinedTextField(value = newPhone, onValueChange = { newPhone = it.filter(Char::isDigit) },
                         label = { Text("Telefone (ex.: 5535999999999)") },
@@ -304,7 +345,8 @@ private fun HomeScreen(api: PonteApi, refreshKey: Int, onChat: (ChatSummary) -> 
                     creating = true
                     scope.launch {
                         try {
-                            val id = api.createConversation(newPhone)
+                            val id = if(accountSelected>0)api.createConversation(newPhone,accountSelected)
+                                else api.createConversation(newPhone)
                             newChat = false
                             onChat(ChatSummary(id, newPhone, newPhone, "", "", 0))
                         } catch (e: Exception) { error = e.message }
@@ -332,6 +374,8 @@ private fun ChatScreen(chat: ChatSummary, api: PonteApi, onBack: () -> Unit, onU
     var input by remember(chat.id) { mutableStateOf("") }
     var error by remember(chat.id) { mutableStateOf<String?>(null) }
     var sending by remember(chat.id) { mutableStateOf(false) }
+    var showTemplate by remember(chat.id) { mutableStateOf(false) }
+    var showInfo by remember(chat.id) { mutableStateOf(false) }
     val listState = rememberLazyListState()
     LaunchedEffect(chat.id) {
         while (isActive) {
@@ -349,14 +393,21 @@ private fun ChatScreen(chat: ChatSummary, api: PonteApi, onBack: () -> Unit, onU
         if (messages.isNotEmpty()) listState.animateScrollToItem(messages.lastIndex)
     }
     Scaffold(topBar = {
-        Row(Modifier.fillMaxWidth().background(Color.White).padding(8.dp),
+        Row(Modifier.fillMaxWidth().background(Color(0xFF053D30)).padding(8.dp),
             verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Voltar") }
-            Avatar(chat.name)
+            IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Voltar",tint=Color.White) }
+            Box(Modifier.clickable{showInfo=true}){ Avatar(chat.name) }
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
-                Text(chat.name, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(chat.phone, color = Color.Gray, fontSize = 12.sp)
+                Text(chat.name,fontWeight=FontWeight.SemiBold,color=Color.White,
+                    maxLines=1,overflow=TextOverflow.Ellipsis)
+                Text(chat.phone,color=Color(0xFFA7DFC5),fontSize=12.sp)
+            }
+            IconButton(onClick={showTemplate=true}) {
+                Icon(Icons.Default.Description,"Enviar template",tint=Color.White)
+            }
+            IconButton(onClick={showInfo=true}) {
+                Icon(Icons.Default.Info,"Informações",tint=Color.White)
             }
         }
     }, bottomBar = {
@@ -419,4 +470,11 @@ private fun ChatScreen(chat: ChatSummary, api: PonteApi, onBack: () -> Unit, onU
             }
         }
     }
+    if(showTemplate) {
+        ZapTemplateDialog(chat,api,onDismiss={showTemplate=false},onSent={
+            showTemplate=false
+            scope.launch{try{messages=api.messages(chat.id)}catch(_:Exception){}}
+        })
+    }
+    if(showInfo) ZapContactInfo(chat,onDismiss={showInfo=false})
 }

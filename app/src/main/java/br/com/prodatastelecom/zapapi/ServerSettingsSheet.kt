@@ -44,7 +44,7 @@ fun ServerSettingsSheet(
                 Spacer(Modifier.width(10.dp))
                 Text("Configurações do servidor", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
             }
-            Text("Acesso à Ponte V1 • HTTPS obrigatório • Sem credenciais da Meta no aplicativo.",
+            Text("Acesso ao ZapApi V1 • HTTPS obrigatório • Sem credenciais da Meta no aplicativo.",
                 style = MaterialTheme.typography.bodySmall)
 
             Text("Servidor", style = MaterialTheme.typography.titleMedium)

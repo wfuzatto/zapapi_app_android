@@ -4,7 +4,7 @@ import android.content.Context
 import java.net.URI
 
 data class ServerConfig(
-    val baseUrl: String = "https://prodatastelecom.com.br/sites/whatsapp_gateway",
+    val baseUrl: String = "https://zapapi.inf.br",
     val apiPrefix: String = "mobile-api/v1",
     val loginPath: String = "auth/login",
     val conversationsPath: String = "conversations",
@@ -66,7 +66,9 @@ class ServerConfigStore(context: Context) {
     fun load(): ServerConfig {
         val defaults = ServerConfig()
         return ServerConfig(
-            baseUrl = prefs.getString("baseUrl", defaults.baseUrl) ?: defaults.baseUrl,
+            baseUrl = (prefs.getString("baseUrl", defaults.baseUrl) ?: defaults.baseUrl)
+                .let { if(it=="https://prodatastelecom.com.br/sites/whatsapp_gateway")
+                    "https://zapapi.inf.br" else it },
             apiPrefix = prefs.getString("apiPrefix", defaults.apiPrefix) ?: defaults.apiPrefix,
             loginPath = prefs.getString("loginPath", defaults.loginPath) ?: defaults.loginPath,
             conversationsPath = prefs.getString("conversationsPath", defaults.conversationsPath) ?: defaults.conversationsPath,

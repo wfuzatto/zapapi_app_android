@@ -4,10 +4,10 @@
 
 Base URL:
 ```
-https://prodatastelecom.com.br/sites/whatsapp_gateway/mobile-api/v1/
+https://zapapi.inf.br/mobile-api/v1/
 ```
 
-> ATENÇÃO: estes endpoints são o **contrato a implementar no backend V1**. Não foram encontrados no repositório `whatsapp_gateway_v1`, que contém apenas README e .gitignore. Não declare o app operacional antes de instalar e testar esse adaptador no servidor.
+> O contrato é implementado no repositório `wfuzatto/whatsapp_gateway`, em `/mobile-api/v1/`. Não utiliza a V2. Alguns recursos avançados (mídia e notificações push ativas) permanecem planejados.
 
 ## Autenticação
 

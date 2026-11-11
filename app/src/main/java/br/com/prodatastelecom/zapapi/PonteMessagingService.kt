@@ -44,7 +44,7 @@ class PonteMessagingService : FirebaseMessagingService() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val notification = NotificationCompat.Builder(this, "messages")
             .setSmallIcon(android.R.drawable.ic_dialog_email)
-            .setContentTitle("Ponte • Nova mensagem")
+            .setContentTitle("ZapApi • Nova mensagem")
             .setContentText("Há uma nova mensagem para sua equipe.")
             .setAutoCancel(true)
             .setContentIntent(pendingIntent)
