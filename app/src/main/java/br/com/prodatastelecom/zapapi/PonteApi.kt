@@ -167,9 +167,13 @@ class PonteApi(private val session: SecureSession, private val settings: ServerC
             ". HTTP 302 não é sucesso de autenticação."
     }
 
-    suspend fun login(email: String, password: String): String {
+    suspend fun login(email: String, password: String, mfaCode: String = ""): String {
+        val code = mfaCode.filter(Char::isDigit)
+        if (code.isNotEmpty() && code.length != 6)
+            throw ApiException(400, "O código autenticador deve conter seis dígitos.")
         val result = request(settings.load().loginPath, "POST",
-            JSONObject().put("email", email).put("password", password), false)
+            JSONObject().put("email", email).put("password", password)
+                .put("mfa_code", code), false)
         return result.optString("access_token").takeIf { it.length >= 20 }
             ?: throw ApiException(502,
                 "A API não retornou access_token válido. O login do painel web não é a API móvel.")
