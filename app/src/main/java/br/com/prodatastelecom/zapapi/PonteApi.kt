@@ -128,6 +128,12 @@ class PonteApi(private val session: SecureSession) {
         }
     }
 
+    suspend fun createConversation(phone: String): String {
+        val result = request("conversations", "POST", JSONObject().put("phone", phone))
+        return result.optString("id").takeIf { it.isNotBlank() }
+            ?: throw ApiException(502, "O backend não retornou a conversa.")
+    }
+
     suspend fun send(conversationId: String, text: String) {
         val id = URLEncoder.encode(conversationId, "UTF-8")
         request("conversations/$id/messages", "POST", JSONObject().put("text", text))
