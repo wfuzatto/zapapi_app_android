@@ -46,13 +46,14 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val session = SecureSession(this)
-        val api = PonteApi(session)
+        val configs = ServerConfigStore(this)
+        val api = PonteApi(session, configs)
         setContent {
             val scope = rememberCoroutineScope()
             var isLoggedIn by remember { mutableStateOf(session.read() != null) }
             var activeChat by remember { mutableStateOf<ChatSummary?>(null) }
             var refreshKey by remember { mutableIntStateOf(0) }
-            var error by remember { mutableStateOf<String?>(null) }
+            var showSettings by remember { mutableStateOf(false) }
             val notificationPermission = rememberLauncherForActivityResult(
                 ActivityResultContracts.RequestPermission()
             ) { }
@@ -71,10 +72,8 @@ class MainActivity : ComponentActivity() {
             )) {
                 Surface(Modifier.fillMaxSize(), color = Color.White) {
                     if (!isLoggedIn) {
-                        LoginScreen(api, session, onLogin = {
-                            isLoggedIn = true
-                            error = null
-                        })
+                        LoginScreen(api, session, onLogin = { isLoggedIn = true },
+                            onSettings = { showSettings = true })
                     } else if (activeChat != null) {
                         val chat = activeChat!!
                         ChatScreen(chat, api, onBack = { activeChat = null }, onUnauthorized = {
@@ -83,7 +82,9 @@ class MainActivity : ComponentActivity() {
                             activeChat = null
                         })
                     } else {
-                        HomeScreen(api, refreshKey, onChat = { activeChat = it }, onRefresh = { refreshKey++ },
+                        HomeScreen(api, refreshKey, onChat = { activeChat = it },
+                            onRefresh = { refreshKey++ },
+                            onSettings = { showSettings = true },
                             onLogout = {
                                 scope.launch {
                                     try { api.logout() } catch (_: Exception) { session.clear() }
@@ -95,20 +96,37 @@ class MainActivity : ComponentActivity() {
                             })
                     }
                 }
+                if (showSettings) {
+                    ServerSettingsSheet(
+                        initial = configs.load(),
+                        api = api,
+                        onDismiss = { showSettings = false },
+                        onSave = { newConfig ->
+                            configs.save(newConfig)
+                            // Invalidar sessão anterior: nunca reutilizar token de outro servidor/tenant.
+                            session.clear()
+                            isLoggedIn = false
+                            activeChat = null
+                            refreshKey++
+                            showSettings = false
+                        }
+                    )
+                }
             }
         }
     }
 }
 
 @Composable
-private fun LoginScreen(api: PonteApi, session: SecureSession, onLogin: () -> Unit) {
+private fun LoginScreen(api: PonteApi, session: SecureSession, onLogin: () -> Unit, onSettings: () -> Unit) {
     val scope = rememberCoroutineScope()
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    Box(Modifier.fillMaxSize().background(Color(0xFFF7FAF8))) {
     Column(
-        Modifier.fillMaxSize().background(Color(0xFFF7FAF8)).padding(28.dp),
+        Modifier.fillMaxSize().padding(28.dp),
         verticalArrangement = Arrangement.Center
     ) {
         Box(Modifier.size(68.dp).clip(RoundedCornerShape(18.dp)).background(Green), contentAlignment = Alignment.Center) {
@@ -150,12 +168,17 @@ private fun LoginScreen(api: PonteApi, session: SecureSession, onLogin: () -> Un
         Text("Use sua conta da plataforma Ponte. Suas credenciais da Meta ficam somente no servidor.",
             fontSize = 12.sp, color = Color.Gray)
     }
+    IconButton(onClick = onSettings, modifier = Modifier.align(Alignment.TopEnd).padding(16.dp)) {
+        Icon(Icons.Default.Settings, contentDescription = "Configurações do servidor", tint = Green)
+    }
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun HomeScreen(api: PonteApi, refreshKey: Int, onChat: (ChatSummary) -> Unit,
-                       onRefresh: () -> Unit, onLogout: () -> Unit, onUnauthorized: () -> Unit) {
+                       onRefresh: () -> Unit, onSettings: () -> Unit,
+                       onLogout: () -> Unit, onUnauthorized: () -> Unit) {
     val scope = rememberCoroutineScope()
     var chats by remember { mutableStateOf<List<ChatSummary>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
@@ -185,6 +208,7 @@ private fun HomeScreen(api: PonteApi, refreshKey: Int, onChat: (ChatSummary) -> 
                 verticalAlignment = Alignment.CenterVertically) {
                 Text("Ponte", fontWeight = FontWeight.Bold, color = Green, fontSize = 27.sp, modifier = Modifier.weight(1f))
                 IconButton(onClick = onRefresh) { Icon(Icons.Default.Refresh, "Atualizar") }
+                IconButton(onClick = onSettings) { Icon(Icons.Default.Settings, "Configurações do servidor") }
                 Box {
                     IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, "Mais opções") }
                     DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
