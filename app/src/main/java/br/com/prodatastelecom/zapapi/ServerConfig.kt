@@ -4,7 +4,7 @@ import android.content.Context
 import java.net.URI
 
 data class ServerConfig(
-    val baseUrl: String = "https://zapapi.inf.br",
+    val baseUrl: String = "https://prodatastelecom.com.br/sites/whatsapp_gateway",
     val apiPrefix: String = "mobile-api/v1",
     val loginPath: String = "auth/login",
     val conversationsPath: String = "conversations",
