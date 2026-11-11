@@ -7,6 +7,7 @@
         android:allowBackup="false"
         android:usesCleartextTraffic="false"
         android:label="Ponte"
+        android:icon="@drawable/ic_ponte"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
         <activity
             android:name=".MainActivity"
