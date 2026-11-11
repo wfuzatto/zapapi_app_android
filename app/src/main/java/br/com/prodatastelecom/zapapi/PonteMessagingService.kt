@@ -24,7 +24,7 @@ class PonteMessagingService : FirebaseMessagingService() {
         val session = SecureSession(this)
         if (session.read() == null) return
         CoroutineScope(Dispatchers.IO).launch {
-            try { PonteApi(session).registerDevice(token) } catch (_: Exception) { /* sincroniza no próximo login */ }
+            try { PonteApi(session, ServerConfigStore(this@PonteMessagingService)).registerDevice(token) } catch (_: Exception) { /* sincroniza no próximo login */ }
         }
     }
 
