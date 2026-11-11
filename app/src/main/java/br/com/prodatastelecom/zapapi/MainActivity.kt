@@ -122,6 +122,7 @@ private fun LoginScreen(api: PonteApi, session: SecureSession, onLogin: () -> Un
     val scope = rememberCoroutineScope()
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
+    var mfaCode by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     Box(Modifier.fillMaxSize().background(Color(0xFFF7FAF8))) {
@@ -143,6 +144,17 @@ private fun LoginScreen(api: PonteApi, session: SecureSession, onLogin: () -> Un
         OutlinedTextField(value = password, onValueChange = { password = it }, label = { Text("Senha") },
             visualTransformation = PasswordVisualTransformation(), singleLine = true,
             modifier = Modifier.fillMaxWidth())
+        Spacer(Modifier.height(12.dp))
+        OutlinedTextField(
+            value = mfaCode,
+            onValueChange = { mfaCode = it.filter(Char::isDigit).take(6) },
+            label = { Text("Código autenticador (se ativado)") },
+            supportingText = { Text("Se usa autenticação em duas etapas, informe os 6 dígitos do aplicativo autenticador.") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+            visualTransformation = PasswordVisualTransformation()
+        )
         if (error != null) {
             Spacer(Modifier.height(10.dp))
             Text(error!!, color = MaterialTheme.colorScheme.error)
@@ -153,13 +165,13 @@ private fun LoginScreen(api: PonteApi, session: SecureSession, onLogin: () -> Un
             error = null
             scope.launch {
                 try {
-                    val token = api.login(email.trim(), password)
+                    val token = api.login(email.trim(), password, mfaCode)
                     session.save(token)
                     onLogin()
                 } catch (e: Exception) { error = e.message ?: "Não foi possível conectar." }
                 finally { busy = false }
             }
-        }, enabled = !busy && email.isNotBlank() && password.isNotBlank(),
+        }, enabled = !busy && email.isNotBlank() && password.isNotBlank() && (mfaCode.isEmpty() || mfaCode.length == 6),
             modifier = Modifier.fillMaxWidth().height(52.dp)) {
             if (busy) CircularProgressIndicator(Modifier.size(20.dp), color = Color.White)
             else Text("Entrar")
