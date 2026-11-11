@@ -22,7 +22,7 @@ import javax.crypto.spec.GCMParameterSpec
 
 data class ZapAccount(val id:Int,val name:String,val phoneNumberId:String)
 data class ZapContact(val phone:String,val name:String,val accountId:Int)
-data class ZapTemplate(val name:String,val language:String,val category:String,val body:String,val variables:Int,val accountId:Int)
+data class ZapTemplate(val name:String,val language:String,val category:String,val header:String,val body:String,val headerVariables:Int,val variables:Int,val accountId:Int)
 
 data class ChatSummary(
     val id: String,
@@ -238,13 +238,14 @@ class PonteApi(private val session: SecureSession, private val settings: ServerC
             val name=item.optString("name")
             if(name.isBlank())return@mapNotNull null
             ZapTemplate(name,item.optString("language"),item.optString("category"),
-                item.optString("body"),item.optInt("variables"),item.optInt("account_id"))
+                item.optString("header"),item.optString("body"),
+                item.optInt("header_variables"),item.optInt("variables"),item.optInt("account_id"))
         }
     }
-    suspend fun sendTemplate(conversationId:String,template:ZapTemplate,values:List<String>) {
+    suspend fun sendTemplate(conversationId:String,template:ZapTemplate,values:List<String>,headerValues:List<String>) {
         val id=URLEncoder.encode(conversationId,"UTF-8")
         val payload=JSONObject().put("name",template.name).put("language",template.language)
-            .put("parameters",JSONArray(values))
+            .put("parameters",JSONArray(values)).put("header_parameters",JSONArray(headerValues))
         request("conversations/$id/templates","POST",payload)
     }
     suspend fun createConversation(phone:String,accountId:Int):String {

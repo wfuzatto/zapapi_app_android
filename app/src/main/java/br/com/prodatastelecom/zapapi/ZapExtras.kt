@@ -110,7 +110,7 @@ fun ZapExtras(tab:Int,api:PonteApi,onChat:(ChatSummary)->Unit,onSettings:()->Uni
                                 Spacer(Modifier.width(12.dp))
                                 Column {
                                     Text(t.name,fontWeight=FontWeight.SemiBold,color=ZapInk)
-                                    Text(t.body.ifBlank{"Modelo aprovado"},fontSize=12.sp,color=Color.Gray,
+                                    Text((t.header+" · "+t.body).trim().ifBlank{"Modelo aprovado"},fontSize=12.sp,color=Color.Gray,
                                         maxLines=2,overflow=TextOverflow.Ellipsis)
                                     Text(t.language+" · "+t.category+" · APROVADO",fontSize=11.sp,color=ZapGreen)
                                 }
@@ -177,11 +177,13 @@ fun ZapTemplateDialog(chat:ChatSummary,api:PonteApi,onDismiss:()->Unit,onSent:()
     var sending by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var values by remember { mutableStateOf<List<String>>(emptyList()) }
+    var headerValues by remember { mutableStateOf<List<String>>(emptyList()) }
     LaunchedEffect(chat.id) {
         try {
             templates=api.templates(chat.id.substringBefore('-').toIntOrNull()?:0)
             selected=templates.firstOrNull()
             values=List(selected?.variables?:0){""}
+            headerValues=List(selected?.headerVariables?:0){""}
         } catch(e:Exception){error=e.message}
         loading=false
     }
@@ -203,13 +205,22 @@ fun ZapTemplateDialog(chat:ChatSummary,api:PonteApi,onDismiss:()->Unit,onSent:()
                         DropdownMenu(expanded=expanded,onDismissRequest={expanded=false}) {
                             templates.forEach{ t ->
                                 DropdownMenuItem(text={Text(t.name+" · "+t.language)},onClick={
-                                    selected=t;values=List(t.variables){""};expanded=false
+                                    selected=t;values=List(t.variables){""}
+                                    headerValues=List(t.headerVariables){""};expanded=false
                                 })
                             }
                         }
                     }
                     selected?.let{ t ->
+                        if(t.header.isNotBlank())
+                            Text(t.header,color=ZapInk,fontWeight=FontWeight.Bold,fontSize=13.sp)
                         Text(t.body,color=ZapInk,fontSize=13.sp,modifier=Modifier.padding(vertical=9.dp))
+                        repeat(t.headerVariables){i ->
+                            OutlinedTextField(value=headerValues.getOrNull(i)?:"",
+                                onValueChange={v->headerValues=headerValues.toMutableList().also{it[i]=v}},
+                                label={Text("Cabeçalho "+(i+1))},
+                                singleLine=true,modifier=Modifier.fillMaxWidth())
+                        }
                         repeat(t.variables){i ->
                             OutlinedTextField(value=values.getOrNull(i)?:"",
                                 onValueChange={v->values=values.toMutableList().also{it[i]=v}},
@@ -221,12 +232,12 @@ fun ZapTemplateDialog(chat:ChatSummary,api:PonteApi,onDismiss:()->Unit,onSent:()
             }
         },
         confirmButton={
-            TextButton(enabled=selected!=null&&!loading&&!sending&&values.all{it.isNotBlank()},
+            TextButton(enabled=selected!=null&&!loading&&!sending&&values.all{it.isNotBlank()}&&headerValues.all{it.isNotBlank()},
                 onClick={
                     val t=selected?:return@TextButton
                     sending=true
                     scope.launch{
-                        try{api.sendTemplate(chat.id,t,values);onSent()}
+                        try{api.sendTemplate(chat.id,t,values,headerValues);onSent()}
                         catch(e:Exception){error=e.message}
                         finally{sending=false}
                     }
