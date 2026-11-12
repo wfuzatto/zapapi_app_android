@@ -26,11 +26,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          VERSION=v1.0.2
-          FILENAME=ZapAPI_Messenger_V1_1.0.2.apk
+          VERSION=v1.0.3
+          FILENAME=ZapAPI_Messenger_V1_1.0.3.apk
           cp app/build/outputs/apk/debug/app-debug.apk "$FILENAME"
           if gh release view "$VERSION" >/dev/null 2>&1; then
             gh release upload "$VERSION" "$FILENAME" --clobber
           else
-            gh release create "$VERSION" "$FILENAME" --target "${GITHUB_SHA}" --title "ZapAPI Messenger V1 1.0.2 (teste)" --notes "APK Android de teste da V1. Corrige a URL de autenticacao que alternava indevidamente o servidor da V1. Instalacao manual; build debug, nao e uma release de producao." --prerelease
+            gh release create "$VERSION" "$FILENAME" --target "${GITHUB_SHA}" --title "ZapAPI Messenger V1 1.0.3 (teste)" --notes "APK Android de teste da V1. Corrige safe area no Android 15: cabeçalho abaixo da barra de status, campo de mensagem acima da navegação e ajuste com teclado. Instalacao manual; build debug, nao e uma release de producao." --prerelease
           fi
