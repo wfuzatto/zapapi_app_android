@@ -4,6 +4,8 @@ import android.Manifest
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -45,6 +47,12 @@ private val Ink = Color(0xFF132722)
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Android 15 (targetSdk 35): o sistema desenha sob as barras por padrão.
+        // Usamos o fundo verde nas barras e reservamos a área segura para os controles.
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.dark(android.graphics.Color.rgb(5, 61, 48)),
+            navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.rgb(5, 61, 48))
+        )
         val session = SecureSession(this)
         val configs = ServerConfigStore(this)
         val api = PonteApi(session, configs)
@@ -70,6 +78,14 @@ class MainActivity : ComponentActivity() {
             MaterialTheme(colorScheme = lightColorScheme(
                 primary = Green, onPrimary = Color.White, background = Color.White, surface = Color.White
             )) {
+                // Respeita barra de status, recorte da câmera, navegação e teclado.
+                // O padding é aplicado uma única vez na raiz de todas as telas.
+                Box(
+                    Modifier.fillMaxSize()
+                        .background(Color(0xFF053D30))
+                        .safeDrawingPadding()
+                        .imePadding()
+                ) {
                 Surface(Modifier.fillMaxSize(), color = Color.White) {
                     if (!isLoggedIn) {
                         LoginScreen(api, session, onLogin = { isLoggedIn = true },
@@ -95,6 +111,7 @@ class MainActivity : ComponentActivity() {
                                 isLoggedIn = false
                             })
                     }
+                }
                 }
                 if (showSettings) {
                     ServerSettingsSheet(
@@ -127,7 +144,7 @@ private fun LoginScreen(api: PonteApi, session: SecureSession, onLogin: () -> Un
     var error by remember { mutableStateOf<String?>(null) }
     Box(Modifier.fillMaxSize().background(Color(0xFFF7FAF8))) {
     Column(
-        Modifier.fillMaxSize().padding(28.dp),
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(28.dp),
         verticalArrangement = Arrangement.Center
     ) {
         Box(Modifier.size(68.dp).clip(RoundedCornerShape(18.dp)).background(Green), contentAlignment = Alignment.Center) {
