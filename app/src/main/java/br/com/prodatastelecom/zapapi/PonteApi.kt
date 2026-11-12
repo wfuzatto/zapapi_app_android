@@ -78,6 +78,8 @@ class SecureSession(context: Context) {
 }
 
 class PonteApi(private val session: SecureSession, private val settings: ServerConfigStore) {
+    // Exibe ao operador o servidor real antes de enviar credenciais.
+    fun currentServer(): String = settings.load().normalized().baseUrl
     private val jsonType = "application/json; charset=utf-8".toMediaType()
 
     private fun client(config: ServerConfig): OkHttpClient = OkHttpClient.Builder()
