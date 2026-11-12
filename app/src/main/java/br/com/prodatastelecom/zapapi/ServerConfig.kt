@@ -66,9 +66,9 @@ class ServerConfigStore(context: Context) {
     fun load(): ServerConfig {
         val defaults = ServerConfig()
         return ServerConfig(
-            baseUrl = (prefs.getString("baseUrl", defaults.baseUrl) ?: defaults.baseUrl)
-                .let { if(it=="https://prodatastelecom.com.br/sites/whatsapp_gateway")
-                    "https://zapapi.inf.br" else it },
+            // Não reescrever o endereço da V1: o valor configurado deve ser respeitado.
+            // Versões antigas redirecionavam indevidamente Prodatas para zapapi.inf.br.
+            baseUrl = prefs.getString("baseUrl", defaults.baseUrl) ?: defaults.baseUrl,
             apiPrefix = prefs.getString("apiPrefix", defaults.apiPrefix) ?: defaults.apiPrefix,
             loginPath = prefs.getString("loginPath", defaults.loginPath) ?: defaults.loginPath,
             conversationsPath = prefs.getString("conversationsPath", defaults.conversationsPath) ?: defaults.conversationsPath,
