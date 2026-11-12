@@ -179,6 +179,8 @@ private fun LoginScreen(api: PonteApi, session: SecureSession, onLogin: () -> Un
         Spacer(Modifier.height(15.dp))
         Text("Entre com sua conta ZapApi. O token da Meta permanece protegido no servidor.",
             fontSize = 12.sp, color = Color.Gray)
+        Spacer(Modifier.height(6.dp))
+        Text("Servidor: " + api.currentServer(), fontSize = 11.sp, color = Color.Gray)
     }
     IconButton(onClick = onSettings, modifier = Modifier.align(Alignment.TopEnd).padding(16.dp)) {
         Icon(Icons.Default.Settings, contentDescription = "Configurações do servidor", tint = Green)
