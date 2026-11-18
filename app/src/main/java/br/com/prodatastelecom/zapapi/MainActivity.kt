@@ -3,7 +3,9 @@ package br.com.prodatastelecom.zapapi
 import android.Manifest
 import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.media.MediaMetadataRetriever
 import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Build
@@ -42,6 +44,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -49,7 +52,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.DialogWindowProvider
 import androidx.core.content.FileProvider
+import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import com.google.firebase.FirebaseApp
@@ -684,7 +691,7 @@ private fun ChatMessageBubble(message: ChatMessage, api: PonteApi, onUnauthorize
                     attachment != null -> when (kind) {
                         "image", "sticker" -> ImageMessageContent(attachment!!, kind == "sticker")
                         "audio" -> AudioMessageContent(attachment!!)
-                        "video" -> VideoMessageContent(attachment!!)
+                        "video" -> VideoMessageContent(attachment!!, isInbound = !outbound)
                         else -> OpenDocumentButton(attachment!!)
                     }
                 }
@@ -835,11 +842,33 @@ private fun AudioMessageContent(attachment: MediaAttachment) {
 }
 
 @Composable
-private fun VideoMessageContent(attachment: MediaAttachment) {
+private fun VideoMessageContent(attachment: MediaAttachment, isInbound: Boolean) {
     var view by remember(attachment.file.absolutePath) { mutableStateOf<VideoView?>(null) }
+    var videoPlayer by remember(attachment.file.absolutePath) { mutableStateOf<MediaPlayer?>(null) }
     var prepared by remember(attachment.file.absolutePath) { mutableStateOf(false) }
     var playing by remember(attachment.file.absolutePath) { mutableStateOf(false) }
     var failed by remember(attachment.file.absolutePath) { mutableStateOf(false) }
+    var loopAsSticker by remember(attachment.file.absolutePath) { mutableStateOf(false) }
+    var showFullscreen by remember(attachment.file.absolutePath) { mutableStateOf(false) }
+    var thumbnail by remember(attachment.file.absolutePath) { mutableStateOf<ImageBitmap?>(null) }
+    LaunchedEffect(attachment.file.absolutePath) {
+        val preview = withContext(Dispatchers.IO) { decodeVideoPreview(attachment.file, isInbound) }
+        thumbnail = preview.thumbnail
+        loopAsSticker = preview.loopAsSticker
+    }
+    LaunchedEffect(prepared, loopAsSticker, failed) {
+        if (prepared && loopAsSticker && !failed) {
+            try {
+                videoPlayer?.isLooping = true
+                view?.setMediaController(null)
+                view?.start()
+                playing = true
+            } catch (_: Exception) {
+                failed = true
+                playing = false
+            }
+        }
+    }
     DisposableEffect(attachment.file.absolutePath) {
         onDispose { try { view?.stopPlayback() } catch (_: Exception) { } }
     }
@@ -853,7 +882,8 @@ private fun VideoMessageContent(attachment: MediaAttachment) {
                     val controller = MediaController(context)
                     controller.setAnchorView(this)
                     setMediaController(controller)
-                    setOnPreparedListener {
+                    setOnPreparedListener { player ->
+                        videoPlayer = player
                         prepared = true
                         failed = false
                     }
@@ -870,11 +900,15 @@ private fun VideoMessageContent(attachment: MediaAttachment) {
             },
             modifier = Modifier.matchParentSize()
         )
+        if (!playing && !failed && thumbnail != null) {
+            Image(thumbnail!!, contentDescription = "Prévia do vídeo",
+                contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
+        }
         when {
             failed -> Text("O Android não conseguiu reproduzir este vídeo.",
                 color = Color.White, fontSize = 12.sp)
             !prepared -> CircularProgressIndicator(color = Color.White)
-            !playing -> IconButton(
+            !playing && !loopAsSticker -> IconButton(
                 onClick = {
                     try {
                         view?.start()
@@ -889,6 +923,143 @@ private fun VideoMessageContent(attachment: MediaAttachment) {
                     tint = Color.White, modifier = Modifier.size(38.dp))
             }
         }
+        if (prepared && !failed) {
+            IconButton(
+                onClick = {
+                    try {
+                        view?.pause()
+                        playing = false
+                        showFullscreen = true
+                    } catch (_: Exception) {
+                        failed = true
+                    }
+                },
+                modifier = Modifier.align(Alignment.BottomEnd).padding(8.dp)
+                    .background(Color.Black.copy(alpha = 0.64f), CircleShape)
+            ) {
+                Icon(Icons.Default.Fullscreen, contentDescription = "Vídeo em tela cheia",
+                    tint = Color.White)
+            }
+        }
+    }
+    if (showFullscreen) FullscreenVideoDialog(attachment, loopAsSticker) {
+        showFullscreen = false
+        if (loopAsSticker) {
+            try {
+                view?.start()
+                playing = true
+            } catch (_: Exception) {
+                failed = true
+            }
+        }
+    }
+}
+
+@Composable
+private fun FullscreenVideoDialog(
+    attachment: MediaAttachment,
+    loopAsSticker: Boolean,
+    onDismiss: () -> Unit
+) {
+    var view by remember(attachment.file.absolutePath) { mutableStateOf<VideoView?>(null) }
+    var failed by remember(attachment.file.absolutePath) { mutableStateOf(false) }
+    Dialog(onDismissRequest = onDismiss,
+        properties = DialogProperties(dismissOnClickOutside = false, usePlatformDefaultWidth = false)) {
+        val dialogWindow = (LocalView.current.parent as? DialogWindowProvider)?.window
+        DisposableEffect(dialogWindow) {
+            if (dialogWindow != null) {
+                WindowCompat.setDecorFitsSystemWindows(dialogWindow, false)
+                WindowInsetsControllerCompat(dialogWindow, dialogWindow.decorView).apply {
+                    systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                    hide(WindowInsetsCompat.Type.systemBars())
+                }
+            }
+            onDispose {
+                if (dialogWindow != null) {
+                    WindowInsetsControllerCompat(dialogWindow, dialogWindow.decorView)
+                        .show(WindowInsetsCompat.Type.systemBars())
+                    WindowCompat.setDecorFitsSystemWindows(dialogWindow, true)
+                }
+                try { view?.stopPlayback() } catch (_: Exception) { }
+            }
+        }
+        Box(Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) {
+            AndroidView(
+                factory = { context ->
+                    VideoView(context).apply {
+                        if (!loopAsSticker) {
+                            val controller = MediaController(context)
+                            controller.setAnchorView(this)
+                            setMediaController(controller)
+                        }
+                        setOnPreparedListener {
+                            it.isLooping = loopAsSticker
+                            it.start()
+                        }
+                        setOnErrorListener { _, _, _ -> failed = true; true }
+                        setVideoURI(Uri.fromFile(attachment.file))
+                        view = this
+                    }
+                },
+                modifier = Modifier.fillMaxSize()
+            )
+            if (failed) Text("O Android não conseguiu reproduzir este vídeo.",
+                color = Color.White, fontSize = 14.sp)
+            IconButton(
+                onClick = onDismiss,
+                modifier = Modifier.align(Alignment.TopEnd).padding(12.dp)
+                    .background(Color.Black.copy(alpha = 0.64f), CircleShape)
+            ) {
+                Icon(Icons.Default.Close, contentDescription = "Fechar vídeo",
+                    tint = Color.White)
+            }
+        }
+    }
+}
+
+private data class VideoPreview(val thumbnail: ImageBitmap?, val loopAsSticker: Boolean)
+
+private fun decodeVideoPreview(file: File, isInbound: Boolean): VideoPreview {
+    val thumbnailFile = File(file.parentFile, file.name.removeSuffix(".media") + ".thumb.jpg")
+    val retriever = MediaMetadataRetriever()
+    return try {
+        retriever.setDataSource(file.absolutePath)
+        val durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+            ?.toLongOrNull() ?: 0L
+        val width = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
+            ?.toIntOrNull() ?: 0
+        val height = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
+            ?.toIntOrNull() ?: 0
+        val rotation = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)
+            ?.toIntOrNull() ?: 0
+        val displayWidth = if (rotation == 90 || rotation == 270) height else width
+        val displayHeight = if (rotation == 90 || rotation == 270) width else height
+        val loopAsSticker = isInbound && durationMs in 1L..6000L &&
+            displayWidth in 1..320 && displayHeight in 1..320
+        val thumbnail = BitmapFactory.decodeFile(thumbnailFile.absolutePath)?.asImageBitmap()
+            ?: runCatching {
+                val frame = if (Build.VERSION.SDK_INT >= 27) {
+                    retriever.getScaledFrameAtTime(0L,
+                        MediaMetadataRetriever.OPTION_CLOSEST_SYNC, 960, 960)
+                } else {
+                    retriever.getFrameAtTime(0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                } ?: return@runCatching null
+                val scale = minOf(1f, 960f / maxOf(frame.width, frame.height).coerceAtLeast(1))
+                val scaled = if (scale < 1f) Bitmap.createScaledBitmap(frame,
+                    (frame.width * scale).toInt().coerceAtLeast(1),
+                    (frame.height * scale).toInt().coerceAtLeast(1), true) else frame
+                try {
+                    thumbnailFile.outputStream().use {
+                        scaled.compress(Bitmap.CompressFormat.JPEG, 82, it)
+                    }
+                } catch (_: Exception) { }
+                scaled.asImageBitmap()
+            }.getOrNull()
+        VideoPreview(thumbnail, loopAsSticker)
+    } catch (_: Exception) {
+        VideoPreview(null, false)
+    } finally {
+        try { retriever.release() } catch (_: Exception) { }
     }
 }
 

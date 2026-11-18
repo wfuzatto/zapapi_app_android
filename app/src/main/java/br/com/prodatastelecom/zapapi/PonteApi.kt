@@ -241,14 +241,14 @@ class PonteApi(private val session: SecureSession, private val settings: ServerC
     private fun knownMediaType(value: String): String? = when (value.trim().lowercase()) {
         "image", "photo", "picture", "imagem", "foto" -> "image"
         "audio", "voice", "ptt", "voice_note", "áudio", "voz" -> "audio"
-        "video", "vídeo", "clip" -> "video"
+        "video", "vídeo", "clip", "gif", "animated_gif" -> "video"
         "sticker", "sticker_image", "figurinha", "figurinha_animada" -> "sticker"
         "document", "file", "attachment", "documento", "arquivo" -> "document"
         else -> null
     }
 
     private fun placeholderMediaType(text: String): String? {
-        val match = Regex("^\\s*\\[(image|photo|video|audio|sticker|document|file)\\]", RegexOption.IGNORE_CASE)
+        val match = Regex("^\\s*\\[(image|photo|video|gif|audio|sticker|document|file)\\]", RegexOption.IGNORE_CASE)
             .find(text) ?: return null
         return knownMediaType(match.groupValues[1])
     }
@@ -427,12 +427,18 @@ class PonteApi(private val session: SecureSession, private val settings: ServerC
     private fun trimMediaCache(directory: File, keep: File) {
         val files = directory.listFiles()?.filter { it.isFile && it.name.endsWith(".media") }
             ?.sortedBy { it.lastModified() } ?: return
-        var total = files.sumOf { it.length() }
+        var total = files.sumOf { it.length() } + (directory.listFiles()
+            ?.filter { it.isFile && it.name.endsWith(".thumb.jpg") }?.sumOf { it.length() } ?: 0L)
         for (file in files) {
             if (total <= maxMediaCacheBytes) break
             if (file.absolutePath == keep.absolutePath) continue
             val size = file.length()
-            if (file.delete()) total -= size
+            if (file.delete()) {
+                total -= size
+                val thumbnail = File(directory, file.name.removeSuffix(".media") + ".thumb.jpg")
+                val thumbnailSize = thumbnail.length()
+                if (thumbnail.delete()) total -= thumbnailSize
+            }
         }
     }
 
