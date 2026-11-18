@@ -13,8 +13,8 @@ android {
         applicationId = "br.com.prodatastelecom.zapapi"
         minSdk = 26
         targetSdk = 35
-        versionCode = 15
-        versionName = "1.1.2"
+        versionCode = 16
+        versionName = "1.1.3"
         buildConfigField("String", "PLATFORM_BASE_URL", "\"https://zapapi.inf.br\"")
     }
     buildFeatures { compose = true; buildConfig = true }

@@ -837,25 +837,59 @@ private fun AudioMessageContent(attachment: MediaAttachment) {
 @Composable
 private fun VideoMessageContent(attachment: MediaAttachment) {
     var view by remember(attachment.file.absolutePath) { mutableStateOf<VideoView?>(null) }
+    var prepared by remember(attachment.file.absolutePath) { mutableStateOf(false) }
+    var playing by remember(attachment.file.absolutePath) { mutableStateOf(false) }
     var failed by remember(attachment.file.absolutePath) { mutableStateOf(false) }
     DisposableEffect(attachment.file.absolutePath) {
         onDispose { try { view?.stopPlayback() } catch (_: Exception) { } }
     }
-    AndroidView(
-        factory = { context ->
-            VideoView(context).apply {
-                val controller = MediaController(context)
-                controller.setAnchorView(this)
-                setMediaController(controller)
-                setOnErrorListener { _, _, _ -> failed = true; true }
-                setVideoURI(Uri.fromFile(attachment.file))
-                view = this
+    Box(
+        modifier = Modifier.fillMaxWidth().height(210.dp).clip(RoundedCornerShape(10.dp)),
+        contentAlignment = Alignment.Center
+    ) {
+        AndroidView(
+            factory = { context ->
+                VideoView(context).apply {
+                    val controller = MediaController(context)
+                    controller.setAnchorView(this)
+                    setMediaController(controller)
+                    setOnPreparedListener {
+                        prepared = true
+                        failed = false
+                    }
+                    setOnCompletionListener { playing = false }
+                    setOnErrorListener { _, _, _ ->
+                        failed = true
+                        prepared = false
+                        playing = false
+                        true
+                    }
+                    setVideoURI(Uri.fromFile(attachment.file))
+                    view = this
+                }
+            },
+            modifier = Modifier.matchParentSize()
+        )
+        when {
+            failed -> Text("O Android não conseguiu reproduzir este vídeo.",
+                color = Color.White, fontSize = 12.sp)
+            !prepared -> CircularProgressIndicator(color = Color.White)
+            !playing -> IconButton(
+                onClick = {
+                    try {
+                        view?.start()
+                        playing = true
+                    } catch (_: Exception) {
+                        failed = true
+                    }
+                },
+                modifier = Modifier.size(64.dp).background(Green.copy(alpha = 0.92f), CircleShape)
+            ) {
+                Icon(Icons.Default.PlayArrow, contentDescription = "Reproduzir vídeo",
+                    tint = Color.White, modifier = Modifier.size(38.dp))
             }
-        },
-        modifier = Modifier.fillMaxWidth().height(210.dp).clip(RoundedCornerShape(10.dp))
-    )
-    if (failed) Text("O Android não conseguiu reproduzir este vídeo.",
-        color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+        }
+    }
 }
 
 @Composable
