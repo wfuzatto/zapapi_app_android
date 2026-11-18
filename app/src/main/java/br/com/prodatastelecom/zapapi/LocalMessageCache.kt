@@ -9,7 +9,7 @@ data class CachedMessagePage(val messages: List<ChatMessage>, val hasMore: Boole
 
 /** Stores only messages that have actually been loaded by the operator. */
 class LocalMessageCache(context: Context) : SQLiteOpenHelper(
-    context.applicationContext, "zapapi_messages.db", null, 1
+    context.applicationContext, "zapapi_messages.db", null, 2
 ) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
@@ -33,10 +33,44 @@ class LocalMessageCache(context: Context) : SQLiteOpenHelper(
         db.execSQL(
             "CREATE INDEX messages_page_idx ON messages(account_key, conversation_id, message_id)"
         )
+        createConversationState(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        // Versioned upgrades are added when the cache schema changes.
+        if (oldVersion < 2) {
+            createConversationState(db)
+            migrateCachedMedia(db)
+        }
+    }
+
+    private fun createConversationState(db: SQLiteDatabase) {
+        db.execSQL(
+            """CREATE TABLE IF NOT EXISTS conversation_state (
+                account_key TEXT NOT NULL,
+                conversation_id TEXT NOT NULL,
+                has_more INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY(account_key, conversation_id)
+            )""".trimIndent()
+        )
+    }
+
+    private fun migrateCachedMedia(db: SQLiteDatabase) {
+        listOf("image", "video", "audio", "sticker", "document", "file").forEach { label ->
+            val type = when (label) { "file" -> "document"; else -> label }
+            db.execSQL(
+                "UPDATE messages SET type=?, has_media=1 WHERE lower(type)='text' AND lower(trim(text)) LIKE ?",
+                arrayOf(type, "[$label]%")
+            )
+        }
+    }
+
+    @Synchronized
+    fun setHasMore(accountKey: String, conversationId: String, hasMore: Boolean) {
+        writableDatabase.insertWithOnConflict("conversation_state", null, ContentValues().apply {
+            put("account_key", accountKey)
+            put("conversation_id", conversationId)
+            put("has_more", if (hasMore) 1 else 0)
+        }, SQLiteDatabase.CONFLICT_REPLACE)
     }
 
     @Synchronized
@@ -174,13 +208,21 @@ class LocalMessageCache(context: Context) : SQLiteOpenHelper(
                 )
             }
         }
-        val hasMore = rows.size > limit
+        val hasMore = rows.size > limit || hasMore(accountKey, conversationId)
         return CachedMessagePage(rows.take(limit).asReversed(), hasMore)
     }
+
+    private fun hasMore(accountKey: String, conversationId: String): Boolean =
+        readableDatabase.query(
+            "conversation_state", arrayOf("has_more"),
+            "account_key=? AND conversation_id=?", arrayOf(accountKey, conversationId),
+            null, null, null, "1"
+        ).use { cursor -> !cursor.moveToFirst() || cursor.getInt(0) != 0 }
 
     @Synchronized
     fun clearAll() {
         writableDatabase.delete("messages", null, null)
+        writableDatabase.delete("conversation_state", null, null)
     }
 
     companion object {

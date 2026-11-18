@@ -235,14 +235,44 @@ class PonteApi(private val session: SecureSession, private val settings: ServerC
         return settings.load().messagesPath.replace("{id}", id)
     }
 
+    private fun firstNonBlank(row: JSONObject, vararg keys: String): String =
+        keys.asSequence().map { row.optString(it).trim() }.firstOrNull { it.isNotBlank() }.orEmpty()
+
+    private fun knownMediaType(value: String): String? = when (value.trim().lowercase()) {
+        "image", "photo", "picture", "imagem", "foto" -> "image"
+        "audio", "voice", "ptt", "voice_note", "áudio", "voz" -> "audio"
+        "video", "vídeo", "clip" -> "video"
+        "sticker", "sticker_image", "figurinha", "figurinha_animada" -> "sticker"
+        "document", "file", "attachment", "documento", "arquivo" -> "document"
+        else -> null
+    }
+
+    private fun placeholderMediaType(text: String): String? {
+        val match = Regex("^\\s*\\[(image|photo|video|audio|sticker|document|file)\\]", RegexOption.IGNORE_CASE)
+            .find(text) ?: return null
+        return knownMediaType(match.groupValues[1])
+    }
+
     private fun parseMessages(items: JSONArray): List<ChatMessage> =
         (0 until items.length()).mapNotNull { i ->
             val row = items.optJSONObject(i) ?: return@mapNotNull null
-            val mime = row.optString("media_mime")
+            val media = row.optJSONObject("media")
+            val mime = firstNonBlank(row, "media_mime", "mime_type", "mimetype", "mime")
+                .ifBlank { media?.let { firstNonBlank(it, "media_mime", "mime_type", "mimetype", "mime") }.orEmpty() }
+            val text = firstNonBlank(row, "text", "caption")
+            val rawType = firstNonBlank(row, "type", "message_type", "media_type")
+            val type = knownMediaType(rawType) ?: placeholderMediaType(text) ?: rawType.ifBlank { "text" }
+            val mediaId = firstNonBlank(row, "media_id").ifBlank { media?.optString("id").orEmpty() }
+            val explicitHasMedia = row.optBoolean("has_media", false) ||
+                row.optString("has_media").equals("1", ignoreCase = true) ||
+                row.optString("has_media").equals("true", ignoreCase = true)
+            val hasMedia = explicitHasMedia || mime.isNotBlank() || mediaId.isNotBlank() ||
+                type in setOf("image", "audio", "video", "sticker", "document")
+            val filename = firstNonBlank(row, "media_filename", "filename", "file_name")
+                .ifBlank { media?.let { firstNonBlank(it, "filename", "file_name", "name") }.orEmpty() }
             row.optString("id").takeIf { it.isNotBlank() }?.let { id ->
-                ChatMessage(id, row.optString("text"), row.optString("direction"),
-                    row.optString("created_at"), row.optString("status"), row.optString("type", "text"),
-                    row.optBoolean("has_media", mime.isNotBlank()), mime, row.optString("media_filename"))
+                ChatMessage(id, text, row.optString("direction"), row.optString("created_at"),
+                    row.optString("status"), type, hasMedia, mime, filename)
             }
         }
 
@@ -252,16 +282,19 @@ class PonteApi(private val session: SecureSession, private val settings: ServerC
         val raw = parseMessages(result.optJSONArray("data") ?: JSONArray())
         val pageMessages = raw.takeLast(50)
         messageCache.save(key, conversationId, pageMessages)
+        val serverHasMore = result.optBoolean("has_more", raw.size > 50)
+        messageCache.setHasMore(key, conversationId, serverHasMore)
         val page = messageCache.latest(key, conversationId)
         val pending = messageCache.pending(key, conversationId)
         MessagePage((page.messages + pending).sortedBy { it.id.toLongOrNull() ?: Long.MAX_VALUE },
-            result.optBoolean("has_more", raw.size > 50) || page.hasMore)
+            serverHasMore || page.hasMore)
     }
 
     suspend fun olderMessages(conversationId: String, beforeId: String): MessagePage =
         withContext(Dispatchers.IO) {
             val key = messageCacheKey()
             val cached = messageCache.before(key, conversationId, beforeId)
+            if (cached.messages.isNotEmpty()) return@withContext MessagePage(cached.messages, cached.hasMore)
             try {
                 val path = messagesPath(conversationId) + "?limit=50&before_id=" +
                     URLEncoder.encode(beforeId, "UTF-8")
@@ -271,14 +304,14 @@ class PonteApi(private val session: SecureSession, private val settings: ServerC
                 val older = raw.filter { (it.id.toLongOrNull() ?: Long.MAX_VALUE) < before }
                     .sortedBy { it.id.toLongOrNull() ?: Long.MAX_VALUE }
                 if (older.isEmpty()) {
-                    return@withContext if (cached.messages.isNotEmpty())
-                        MessagePage(cached.messages, cached.hasMore)
-                    else MessagePage(emptyList(), false)
+                    messageCache.setHasMore(key, conversationId, false)
+                    return@withContext MessagePage(emptyList(), false)
                 }
                 val pageMessages = older.takeLast(50)
                 messageCache.save(key, conversationId, pageMessages)
-                MessagePage(pageMessages, result.optBoolean("has_more", older.size > 50) ||
-                    cached.hasMore)
+                val serverHasMore = result.optBoolean("has_more", older.size > 50)
+                messageCache.setHasMore(key, conversationId, serverHasMore)
+                MessagePage(pageMessages, serverHasMore)
             } catch (e: Exception) {
                 if (cached.messages.isNotEmpty()) MessagePage(cached.messages, cached.hasMore)
                 else throw e

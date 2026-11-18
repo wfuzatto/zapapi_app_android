@@ -57,6 +57,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.yield
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -281,7 +282,8 @@ private fun HomeScreen(api: PonteApi, refreshKey: Int, lifecycle: Lifecycle, onC
             OutlinedTextField(value = search, onValueChange = { search = it }, singleLine = true,
                 leadingIcon = { Icon(Icons.Default.Search, null) },
                 placeholder = { Text("Pesquisar conversas") },
-                shape = RoundedCornerShape(30.dp), modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp))
+                shape = RoundedCornerShape(30.dp), modifier = Modifier.fillMaxWidth()
+                    .padding(horizontal = 14.dp).padding(top = 8.dp))
             Row(Modifier.padding(14.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 FilterChip(selected = !unreadOnly, onClick = { unreadOnly = false }, label = { Text("Todas") })
                 FilterChip(selected = unreadOnly, onClick = { unreadOnly = true }, label = { Text("Não lidas") })
@@ -419,6 +421,30 @@ private fun ChatScreen(chat: ChatSummary, api: PonteApi, lifecycle: Lifecycle,
     var showTemplate by remember(chat.id) { mutableStateOf(false) }
     var showInfo by remember(chat.id) { mutableStateOf(false) }
     val listState = rememberLazyListState()
+
+    fun mergeChangedMessages(changed: List<ChatMessage>, atBottom: Boolean) {
+        if (changed.isEmpty()) return
+        val pendingByServerId = pendingServerIds.entries.associate { it.value to it.key }
+        val merged = messages.toMutableList()
+        var addedNew = false
+        changed.forEach { remote ->
+            val pendingLocalId = pendingByServerId[remote.id]
+            if (pendingLocalId != null) {
+                if (remote.status.equals("accepted", ignoreCase = true)) return@forEach
+                merged.removeAll { it.id == pendingLocalId }
+                pendingServerIds = pendingServerIds - pendingLocalId
+            }
+            val existingIndex = merged.indexOfFirst { it.id == remote.id }
+            if (existingIndex >= 0) merged[existingIndex] = remote
+            else { merged += remote; addedNew = true }
+        }
+        messages = merged.distinctBy { it.id }
+            .sortedBy { it.id.toLongOrNull() ?: Long.MAX_VALUE }
+        if (atBottom && addedNew) scope.launch {
+            if (messages.isNotEmpty()) listState.animateScrollToItem(messages.lastIndex)
+        }
+    }
+
     LaunchedEffect(chat.id, lifecycle) {
         try {
             val cached = api.cachedLatestMessages(chat.id)
@@ -426,12 +452,19 @@ private fun ChatScreen(chat: ChatSummary, api: PonteApi, lifecycle: Lifecycle,
             pendingServerIds = cached.messages.filter { it.isPending && it.serverMessageId.isNotBlank() }
                 .associate { it.id to it.serverMessageId }
             hasMoreOlder = cached.hasMore
+            if (cached.messages.any { !it.isPending }) {
+                // Put the existing SQLite page on screen at once, before network synchronization.
+                yield()
+                listState.scrollToItem(cached.messages.lastIndex)
+                initialScrollDone = true
+            }
         } catch (_: Exception) { }
         var firstFetch = true
         lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
             while (isActive) {
                 try {
-                    if (firstFetch) {
+                    val hasCachedRemoteMessages = messages.any { !it.isPending }
+                    if (firstFetch && !hasCachedRemoteMessages) {
                         val page = api.latestMessages(chat.id)
                         val pending = messages.filter { it.isPending }
                         messages = (page.messages + pending).distinctBy { it.id }
@@ -439,7 +472,6 @@ private fun ChatScreen(chat: ChatSummary, api: PonteApi, lifecycle: Lifecycle,
                         hasMoreOlder = page.hasMore
                         if (messages.isNotEmpty()) listState.scrollToItem(messages.lastIndex)
                         initialScrollDone = true
-                        firstFetch = false
                     } else {
                         val loaded = messages.filterNot { it.isPending }
                         val afterId = loaded.mapNotNull { it.id.toLongOrNull() }
@@ -451,28 +483,9 @@ private fun ChatScreen(chat: ChatSummary, api: PonteApi, lifecycle: Lifecycle,
                         val changed = api.syncMessages(
                             chat.id, afterId, statusIds, pendingServerIds.values.toSet()
                         )
-                        if (changed.isNotEmpty()) {
-                            val pendingByServerId = pendingServerIds.entries
-                                .associate { it.value to it.key }
-                            val merged = messages.toMutableList()
-                            var addedNew = false
-                            changed.forEach { remote ->
-                                val pendingLocalId = pendingByServerId[remote.id]
-                                if (pendingLocalId != null) {
-                                    if (remote.status.equals("accepted", ignoreCase = true)) return@forEach
-                                    merged.removeAll { it.id == pendingLocalId }
-                                    pendingServerIds = pendingServerIds - pendingLocalId
-                                }
-                                val existingIndex = merged.indexOfFirst { it.id == remote.id }
-                                if (existingIndex >= 0) merged[existingIndex] = remote
-                                else { merged += remote; addedNew = true }
-                            }
-                            messages = merged.distinctBy { it.id }
-                                .sortedBy { it.id.toLongOrNull() ?: Long.MAX_VALUE }
-                            if (atBottom && addedNew && messages.isNotEmpty())
-                                listState.animateScrollToItem(messages.lastIndex)
-                        }
+                        mergeChangedMessages(changed, atBottom)
                     }
+                    firstFetch = false
                     error = null
                 } catch (e: ApiException) {
                     if (e.httpStatus == 401) { onUnauthorized(); return@repeatOnLifecycle }
@@ -615,7 +628,7 @@ private fun ChatMessageBubble(message: ChatMessage, api: PonteApi, onUnauthorize
     var loading by remember(message.id) { mutableStateOf(false) }
     var mediaError by remember(message.id) { mutableStateOf<String?>(null) }
     var retry by remember(message.id) { mutableIntStateOf(0) }
-    LaunchedEffect(message.id, message.hasMedia, retry) {
+    LaunchedEffect(message.id, message.hasMedia, message.type, message.mediaMime, message.mediaFilename, retry) {
         if (message.hasMedia) {
             loading = true
             mediaError = null
@@ -631,9 +644,7 @@ private fun ChatMessageBubble(message: ChatMessage, api: PonteApi, onUnauthorize
     }
 
     val body = message.text.trim()
-    val isMediaPlaceholder = body.startsWith("Anexo recebido:", ignoreCase = true) ||
-        body.startsWith("[Mídia ", ignoreCase = true) ||
-        (message.mediaFilename.isNotBlank() && body.equals("Anexo: ${message.mediaFilename}", ignoreCase = true))
+    val mediaCaption = if (kind != null) mediaCaption(body, kind, message.mediaFilename) else body
     Row(Modifier.fillMaxWidth(),
         horizontalArrangement = if (outbound) Arrangement.End else Arrangement.Start) {
         Column(Modifier.widthIn(max = 305.dp)
@@ -676,9 +687,9 @@ private fun ChatMessageBubble(message: ChatMessage, api: PonteApi, onUnauthorize
                         else -> OpenDocumentButton(attachment!!)
                     }
                 }
-                if (body.isNotBlank() && !isMediaPlaceholder) {
+                if (mediaCaption.isNotBlank()) {
                     Spacer(Modifier.height(5.dp))
-                    Text(body, color = Ink, fontSize = 14.sp)
+                    Text(mediaCaption, color = Ink, fontSize = 14.sp)
                 }
             } else {
                 Text(body.ifBlank { "[Mensagem sem texto]" }, color = Ink, fontSize = 15.sp)
@@ -697,6 +708,26 @@ private fun ChatMessageBubble(message: ChatMessage, api: PonteApi, onUnauthorize
             }
         }
     }
+}
+
+private fun mediaCaption(body: String, kind: String, filename: String): String {
+    var caption = body.trim()
+    if (caption.isBlank()) return ""
+    if (filename.isNotBlank() && caption.equals("Anexo: $filename", ignoreCase = true)) return ""
+    if (caption.startsWith("Anexo recebido:", ignoreCase = true)) {
+        val detail = caption.substringAfter(':').trim()
+        if (detail.equals(kind, ignoreCase = true) || detail.isBlank()) return ""
+        caption = detail
+    }
+    val prefixes = listOf(
+        "[$kind]", "[${kind.replaceFirstChar { it.uppercase() }}]",
+        "[Mídia $kind]", "[Mídia recebida: $kind]"
+    )
+    val prefix = prefixes.firstOrNull { caption.startsWith(it, ignoreCase = true) }
+    if (prefix != null) return caption.drop(prefix.length).trim()
+    caption = Regex("^\\[m[ií]dia[^]]*]\\s*", RegexOption.IGNORE_CASE).replaceFirst(caption, "")
+    if (caption.startsWith("Anexo:", ignoreCase = true)) return ""
+    return caption
 }
 
 private fun resolvedMediaKind(message: ChatMessage): String? {
