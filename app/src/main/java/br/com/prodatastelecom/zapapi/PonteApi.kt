@@ -12,6 +12,8 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
+import java.io.FileOutputStream
 import java.net.URLEncoder
 import java.security.KeyStore
 import java.util.concurrent.TimeUnit
@@ -19,10 +21,6 @@ import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
-
-data class ZapAccount(val id:Int,val name:String,val phoneNumberId:String)
-data class ZapContact(val phone:String,val name:String,val accountId:Int)
-data class ZapTemplate(val name:String,val language:String,val category:String,val header:String,val body:String,val headerVariables:Int,val variables:Int,val accountId:Int)
 
 data class ChatSummary(
     val id: String,
@@ -37,13 +35,23 @@ data class ChatMessage(
     val text: String,
     val direction: String,
     val time: String,
-    val status: String
+    val status: String,
+    val type: String = "text",
+    val hasMedia: Boolean = false,
+    val mediaMime: String = "",
+    val mediaFilename: String = "",
+    val isPending: Boolean = false,
+    val serverMessageId: String = ""
 )
+data class MessagePage(val messages: List<ChatMessage>, val hasMore: Boolean)
+data class MessageSendReceipt(val id: String, val status: String)
+data class MediaAttachment(val file: File, val mimeType: String, val filename: String)
 class ApiException(val httpStatus: Int, message: String): Exception(message)
 
 /** A sessão do backend NÃO é um token Meta e não sai do app para outros hosts. */
 class SecureSession(context: Context) {
-    private val prefs = context.getSharedPreferences("session_private", Context.MODE_PRIVATE)
+    internal val appContext = context.applicationContext
+    private val prefs = appContext.getSharedPreferences("session_private", Context.MODE_PRIVATE)
     private val alias = "ponte_mobile_session_aes"
     private fun key(): SecretKey {
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
@@ -81,6 +89,9 @@ class PonteApi(private val session: SecureSession, private val settings: ServerC
     // Exibe ao operador o servidor real antes de enviar credenciais.
     fun currentServer(): String = settings.load().normalized().baseUrl
     private val jsonType = "application/json; charset=utf-8".toMediaType()
+    private val maxMediaBytes = 32L * 1024L * 1024L
+    private val maxMediaCacheBytes = 128L * 1024L * 1024L
+    private val messageCache = LocalMessageCache(session.appContext)
 
     private fun client(config: ServerConfig): OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(config.connectionTimeoutSeconds.toLong(), TimeUnit.SECONDS)
@@ -161,10 +172,9 @@ class PonteApi(private val session: SecureSession, private val settings: ServerC
                     (e.message?.take(120) ?: "sem detalhes") + ")"
             }
         }
-        val site = probe("Site HTTPS", cfg.baseUrl + "/")
         val health = probe("API móvel: saúde", cfg.endpoint("health"))
         val login = probe("API móvel: login (GET sem credenciais)", cfg.endpoint(cfg.loginPath))
-        site + "\n\n" + health + "\n\n" + login + "\n\nO teste não envia a senha. O ZapApi " +
+        health + "\n\n" + login + "\n\nO teste não envia a senha. O ZapApi " +
             "precisa responder JSON em /" + cfg.apiPrefix + "/" + cfg.loginPath +
             ". HTTP 302 não é sucesso de autenticação."
     }
@@ -191,14 +201,205 @@ class PonteApi(private val session: SecureSession, private val settings: ServerC
         }.filter { it.id.isNotBlank() }
     }
 
-    suspend fun messages(conversationId: String): List<ChatMessage> {
+    private fun messageCacheKey(): String {
+        val token = session.read() ?: throw ApiException(401, "Faça login novamente.")
+        return java.security.MessageDigest.getInstance("SHA-256")
+            .digest(token.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+    }
+
+    fun clearMessageCache() = messageCache.clearAll()
+
+    suspend fun cachedLatestMessages(conversationId: String): MessagePage = withContext(Dispatchers.IO) {
+        val key = messageCacheKey()
+        val page = messageCache.latest(key, conversationId)
+        val pending = messageCache.pending(key, conversationId)
+        MessagePage((page.messages + pending).sortedBy { it.id.toLongOrNull() ?: Long.MAX_VALUE }, page.hasMore)
+    }
+
+    suspend fun cachePendingMessage(conversationId: String, message: ChatMessage) = withContext(Dispatchers.IO) {
+        messageCache.savePending(messageCacheKey(), conversationId, message)
+    }
+
+    suspend fun attachPendingMessageId(conversationId: String, localId: String, serverId: String) =
+        withContext(Dispatchers.IO) {
+            messageCache.attachPendingId(messageCacheKey(), conversationId, localId, serverId)
+        }
+
+    suspend fun removePendingMessage(conversationId: String, localId: String) = withContext(Dispatchers.IO) {
+        messageCache.removePending(messageCacheKey(), conversationId, localId)
+    }
+
+    private fun messagesPath(conversationId: String): String {
         val id = URLEncoder.encode(conversationId, "UTF-8")
-        val path = settings.load().messagesPath.replace("{id}", id)
-        val items = request(path).optJSONArray("data") ?: JSONArray()
-        return (0 until items.length()).mapNotNull { i ->
+        return settings.load().messagesPath.replace("{id}", id)
+    }
+
+    private fun parseMessages(items: JSONArray): List<ChatMessage> =
+        (0 until items.length()).mapNotNull { i ->
             val row = items.optJSONObject(i) ?: return@mapNotNull null
-            ChatMessage(row.optString("id"), row.optString("text"), row.optString("direction"),
-                row.optString("created_at"), row.optString("status"))
+            val mime = row.optString("media_mime")
+            row.optString("id").takeIf { it.isNotBlank() }?.let { id ->
+                ChatMessage(id, row.optString("text"), row.optString("direction"),
+                    row.optString("created_at"), row.optString("status"), row.optString("type", "text"),
+                    row.optBoolean("has_media", mime.isNotBlank()), mime, row.optString("media_filename"))
+            }
+        }
+
+    suspend fun latestMessages(conversationId: String): MessagePage = withContext(Dispatchers.IO) {
+        val key = messageCacheKey()
+        val result = request(messagesPath(conversationId) + "?limit=50")
+        val raw = parseMessages(result.optJSONArray("data") ?: JSONArray())
+        val pageMessages = raw.takeLast(50)
+        messageCache.save(key, conversationId, pageMessages)
+        val page = messageCache.latest(key, conversationId)
+        val pending = messageCache.pending(key, conversationId)
+        MessagePage((page.messages + pending).sortedBy { it.id.toLongOrNull() ?: Long.MAX_VALUE },
+            result.optBoolean("has_more", raw.size > 50) || page.hasMore)
+    }
+
+    suspend fun olderMessages(conversationId: String, beforeId: String): MessagePage =
+        withContext(Dispatchers.IO) {
+            val key = messageCacheKey()
+            val cached = messageCache.before(key, conversationId, beforeId)
+            try {
+                val path = messagesPath(conversationId) + "?limit=50&before_id=" +
+                    URLEncoder.encode(beforeId, "UTF-8")
+                val result = request(path)
+                val raw = parseMessages(result.optJSONArray("data") ?: JSONArray())
+                val before = beforeId.toLongOrNull() ?: Long.MAX_VALUE
+                val older = raw.filter { (it.id.toLongOrNull() ?: Long.MAX_VALUE) < before }
+                    .sortedBy { it.id.toLongOrNull() ?: Long.MAX_VALUE }
+                if (older.isEmpty()) {
+                    return@withContext if (cached.messages.isNotEmpty())
+                        MessagePage(cached.messages, cached.hasMore)
+                    else MessagePage(emptyList(), false)
+                }
+                val pageMessages = older.takeLast(50)
+                messageCache.save(key, conversationId, pageMessages)
+                MessagePage(pageMessages, result.optBoolean("has_more", older.size > 50) ||
+                    cached.hasMore)
+            } catch (e: Exception) {
+                if (cached.messages.isNotEmpty()) MessagePage(cached.messages, cached.hasMore)
+                else throw e
+            }
+        }
+
+    /** Fetches only new rows plus statuses for the currently loaded window and pending sends. */
+    suspend fun syncMessages(
+        conversationId: String,
+        afterId: String,
+        statusIds: List<String>,
+        pendingIds: Set<String>
+    ): List<ChatMessage> = withContext(Dispatchers.IO) {
+        val key = messageCacheKey()
+        val after = afterId.toLongOrNull() ?: 0L
+        val storedPending = messageCache.pending(key, conversationId)
+        val allPendingIds = pendingIds + storedPending.map { it.serverMessageId }.filter { it.isNotBlank() }
+        val ids = allPendingIds.asSequence().mapNotNull { it.toLongOrNull() }
+            .plus(statusIds.asSequence().mapNotNull { it.toLongOrNull() })
+            .distinct().take(50).toList()
+        val query = buildString {
+            append("?after_id=").append(after)
+            if (ids.isNotEmpty()) append("&ids=").append(ids.joinToString(","))
+        }
+        val result = request(messagesPath(conversationId) + query)
+        val all = parseMessages(result.optJSONArray("data") ?: JSONArray())
+        val include = ids.map { it.toString() }.toSet()
+        val changed = all.filter {
+            val id = it.id.toLongOrNull() ?: return@filter false
+            id > after || it.id in include
+        }
+        changed.forEach { message ->
+            val localPending = storedPending.firstOrNull { it.serverMessageId == message.id }
+            if (localPending != null && !message.status.equals("accepted", ignoreCase = true))
+                messageCache.removePending(key, conversationId, localPending.id)
+        }
+        messageCache.save(key, conversationId, changed.filterNot {
+            it.id in allPendingIds && it.status.equals("accepted", ignoreCase = true)
+        })
+        changed
+    }
+
+    /** Baixa mídia de uma mensagem pelo endpoint móvel autenticado e guarda no cache privado do app. */
+    suspend fun downloadMedia(messageId: String, filename: String, expectedMime: String): MediaAttachment =
+        withContext(Dispatchers.IO) {
+            val id = messageId.takeIf { it.length in 1..18 && it.all(Char::isDigit) && it.any { c -> c != '0' } }
+                ?: throw ApiException(400, "Identificador de mídia inválido.")
+            val cfg = settings.load().normalized()
+            cfg.validate()?.let { throw ApiException(400, "Configurações: $it") }
+            val template = cfg.mediaPath.trim('/')
+            val encodedId = URLEncoder.encode(id, "UTF-8")
+            val path = if (template.contains("{id}")) template.replace("{id}", encodedId)
+                else template.trimEnd('/') + "/" + encodedId
+            val cacheDir = File(session.appContext.cacheDir, "whatsapp_media")
+            if (!cacheDir.exists() && !cacheDir.mkdirs())
+                throw ApiException(500, "Não foi possível preparar o cache privado de mídia.")
+            val cached = File(cacheDir, "message_$id.media")
+            if (cached.isFile && cached.length() > 0L) {
+                cached.setLastModified(System.currentTimeMillis())
+                trimMediaCache(cacheDir, cached)
+                return@withContext MediaAttachment(cached, expectedMime, filename)
+            }
+
+            val token = session.read() ?: throw ApiException(401, "Faça login novamente.")
+            val request = Request.Builder().url(cfg.endpoint(path))
+                .header("Accept", "image/*,audio/*,video/*,application/pdf,application/octet-stream")
+                .header("Authorization", "Bearer $token").get().build()
+            client(cfg).newCall(request).execute().use { response ->
+                if (response.code in 300..399) {
+                    throw ApiException(response.code, "A rota da mídia redirecionou para ${safeLocation(response.header("Location"))}.")
+                }
+                if (!response.isSuccessful) {
+                    val raw = response.body?.string().orEmpty().take(1000)
+                    val detail = try { JSONObject(raw).optString("error").ifBlank { "Erro HTTP ${response.code}" } }
+                        catch (_: Exception) { "Erro HTTP ${response.code}" }
+                    throw ApiException(response.code, detail.take(260))
+                }
+                val body = response.body ?: throw ApiException(502, "A resposta da mídia veio vazia.")
+                if (body.contentLength() > maxMediaBytes)
+                    throw ApiException(413, "O arquivo excede o limite de 32 MB.")
+                val headerMime = response.header("Content-Type").orEmpty().substringBefore(';').trim()
+                val fallbackMime = expectedMime.takeIf { Regex("^[A-Za-z0-9.+-]+/[A-Za-z0-9.+-]+$").matches(it) }
+                    ?: "application/octet-stream"
+                val mime = headerMime.takeIf { Regex("^[A-Za-z0-9.+-]+/[A-Za-z0-9.+-]+$").matches(it) }
+                    ?: fallbackMime
+                val temp = File.createTempFile("media_${id}_", ".part", cacheDir)
+                try {
+                    var total = 0L
+                    body.byteStream().use { input ->
+                        FileOutputStream(temp).buffered().use { output ->
+                            val buffer = ByteArray(16 * 1024)
+                            while (true) {
+                                val count = input.read(buffer)
+                                if (count < 0) break
+                                total += count
+                                if (total > maxMediaBytes) throw ApiException(413, "O arquivo excede o limite de 32 MB.")
+                                output.write(buffer, 0, count)
+                            }
+                        }
+                    }
+                    if (total == 0L) throw ApiException(502, "O arquivo de mídia veio vazio.")
+                    cached.delete()
+                    if (!temp.renameTo(cached)) throw ApiException(500, "Não foi possível salvar a mídia no cache privado.")
+                    trimMediaCache(cacheDir, cached)
+                    MediaAttachment(cached, mime, filename)
+                } catch (e: Exception) {
+                    temp.delete()
+                    throw e
+                }
+            }
+        }
+
+    private fun trimMediaCache(directory: File, keep: File) {
+        val files = directory.listFiles()?.filter { it.isFile && it.name.endsWith(".media") }
+            ?.sortedBy { it.lastModified() } ?: return
+        var total = files.sumOf { it.length() }
+        for (file in files) {
+            if (total <= maxMediaCacheBytes) break
+            if (file.absolutePath == keep.absolutePath) continue
+            val size = file.length()
+            if (file.delete()) total -= size
         }
     }
 
@@ -208,57 +409,16 @@ class PonteApi(private val session: SecureSession, private val settings: ServerC
             ?: throw ApiException(502, "A API não retornou o ID da conversa.")
     }
 
-    suspend fun send(conversationId: String, text: String) {
+    suspend fun send(conversationId: String, text: String): MessageSendReceipt {
         val id = URLEncoder.encode(conversationId, "UTF-8")
-        request(settings.load().sendPath.replace("{id}", id), "POST", JSONObject().put("text", text))
+        val result = request(settings.load().sendPath.replace("{id}", id), "POST", JSONObject().put("text", text))
+        return MessageSendReceipt(result.optString("id").takeIf { it.isNotBlank() }
+            ?: throw ApiException(502, "A API não retornou o ID da mensagem."), result.optString("status"))
     }
 
     suspend fun registerDevice(fcmToken: String) {
         request(settings.load().pushPath, "POST",
             JSONObject().put("platform", "android").put("fcm_token", fcmToken))
-    }
-
-    suspend fun accounts(): List<ZapAccount> {
-        val items=request("accounts").optJSONArray("data") ?: JSONArray()
-        return (0 until items.length()).mapNotNull { index ->
-            val item=items.optJSONObject(index) ?: return@mapNotNull null
-            val id=item.optInt("id")
-            if(id<=0)return@mapNotNull null
-            ZapAccount(id,item.optString("name"),item.optString("phone_number_id"))
-        }
-    }
-    suspend fun contacts(): List<ZapContact> {
-        val items=request(settings.load().contactsPath).optJSONArray("data") ?: JSONArray()
-        return (0 until items.length()).mapNotNull { index ->
-            val item=items.optJSONObject(index) ?: return@mapNotNull null
-            val phone=item.optString("phone")
-            if(phone.isBlank())return@mapNotNull null
-            ZapContact(phone,item.optString("name").ifBlank { phone },item.optInt("account_id"))
-        }
-    }
-    suspend fun templates(accountId: Int): List<ZapTemplate> {
-        val data=request("templates?account_id="+accountId)
-        val arr=data.optJSONArray("data") ?: JSONArray()
-        return (0 until arr.length()).mapNotNull { index ->
-            val item=arr.optJSONObject(index) ?: return@mapNotNull null
-            val name=item.optString("name")
-            if(name.isBlank())return@mapNotNull null
-            ZapTemplate(name,item.optString("language"),item.optString("category"),
-                item.optString("header"),item.optString("body"),
-                item.optInt("header_variables"),item.optInt("variables"),item.optInt("account_id"))
-        }
-    }
-    suspend fun sendTemplate(conversationId:String,template:ZapTemplate,values:List<String>,headerValues:List<String>) {
-        val id=URLEncoder.encode(conversationId,"UTF-8")
-        val payload=JSONObject().put("name",template.name).put("language",template.language)
-            .put("parameters",JSONArray(values)).put("header_parameters",JSONArray(headerValues))
-        request("conversations/$id/templates","POST",payload)
-    }
-    suspend fun createConversation(phone:String,accountId:Int):String {
-        val result=request(settings.load().createPath,"POST",
-            JSONObject().put("phone",phone).put("account_id",accountId))
-        return result.optString("id").takeIf { it.isNotBlank() }
-            ?: throw ApiException(502,"A API não retornou o ID da conversa.")
     }
 
     suspend fun logout() {

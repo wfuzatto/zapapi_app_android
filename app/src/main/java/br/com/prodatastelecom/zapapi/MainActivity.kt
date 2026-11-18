@@ -1,14 +1,22 @@
 package br.com.prodatastelecom.zapapi
 
 import android.Manifest
+import android.content.ActivityNotFoundException
+import android.content.Intent
+import android.graphics.BitmapFactory
+import android.media.MediaPlayer
 import android.os.Build
 import android.os.Bundle
+import android.widget.MediaController
+import android.widget.Toast
+import android.widget.VideoView
 import androidx.activity.ComponentActivity
-import androidx.activity.SystemBarStyle
-import androidx.activity.enableEdgeToEdge
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -19,6 +27,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Chat
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -26,18 +36,35 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.FileProvider
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import com.google.firebase.FirebaseApp
 import com.google.firebase.messaging.FirebaseMessaging
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.distinctUntilChanged
+import androidx.compose.runtime.snapshotFlow
+import java.io.File
+import java.time.LocalTime
+import java.util.Locale
+import java.util.UUID
 
 private val Green = Color(0xFF087F68)
 private val LightGreen = Color(0xFFE7F6EE)
@@ -47,15 +74,20 @@ private val Ink = Color(0xFF132722)
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Android 15 (targetSdk 35): o sistema desenha sob as barras por padrão.
-        // Usamos o fundo verde nas barras e reservamos a área segura para os controles.
-        enableEdgeToEdge(
-            statusBarStyle = SystemBarStyle.dark(android.graphics.Color.rgb(5, 61, 48)),
-            navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.rgb(5, 61, 48))
-        )
+        // Android 15 draws edge-to-edge for targetSdk 35. Keep content inside
+        // the system bars and let Compose handle the IME insets per screen.
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        WindowInsetsControllerCompat(window, window.decorView).apply {
+            isAppearanceLightStatusBars = true
+            isAppearanceLightNavigationBars = true
+        }
         val session = SecureSession(this)
         val configs = ServerConfigStore(this)
+        val migratedToOfficialServer = configs.migrateToOfficialServer()
+        if (migratedToOfficialServer) session.clear()
         val api = PonteApi(session, configs)
+        if (migratedToOfficialServer) api.clearMessageCache()
+        val activityLifecycle = lifecycle
         setContent {
             val scope = rememberCoroutineScope()
             var isLoggedIn by remember { mutableStateOf(session.read() != null) }
@@ -78,40 +110,34 @@ class MainActivity : ComponentActivity() {
             MaterialTheme(colorScheme = lightColorScheme(
                 primary = Green, onPrimary = Color.White, background = Color.White, surface = Color.White
             )) {
-                // Respeita barra de status, recorte da câmera, navegação e teclado.
-                // O padding é aplicado uma única vez na raiz de todas as telas.
-                Box(
-                    Modifier.fillMaxSize()
-                        .background(Color(0xFF053D30))
-                        .safeDrawingPadding()
-                        .imePadding()
-                ) {
-                Surface(Modifier.fillMaxSize(), color = Color.White) {
+                Surface(Modifier.fillMaxSize().safeDrawingPadding(), color = Color.White) {
                     if (!isLoggedIn) {
                         LoginScreen(api, session, onLogin = { isLoggedIn = true },
                             onSettings = { showSettings = true })
                     } else if (activeChat != null) {
                         val chat = activeChat!!
-                        ChatScreen(chat, api, onBack = { activeChat = null }, onUnauthorized = {
+                        ChatScreen(chat, api, activityLifecycle, onBack = { activeChat = null }, onUnauthorized = {
+                            api.clearMessageCache()
                             session.clear()
                             isLoggedIn = false
                             activeChat = null
                         })
                     } else {
-                        HomeScreen(api, refreshKey, onChat = { activeChat = it },
+                        HomeScreen(api, refreshKey, activityLifecycle, onChat = { activeChat = it },
                             onRefresh = { refreshKey++ },
                             onSettings = { showSettings = true },
                             onLogout = {
                                 scope.launch {
                                     try { api.logout() } catch (_: Exception) { session.clear() }
+                                    api.clearMessageCache()
                                     isLoggedIn = false
                                 }
                             }, onUnauthorized = {
+                                api.clearMessageCache()
                                 session.clear()
                                 isLoggedIn = false
                             })
                     }
-                }
                 }
                 if (showSettings) {
                     ServerSettingsSheet(
@@ -120,6 +146,7 @@ class MainActivity : ComponentActivity() {
                         onDismiss = { showSettings = false },
                         onSave = { newConfig ->
                             configs.save(newConfig)
+                            api.clearMessageCache()
                             // Invalidar sessão anterior: nunca reutilizar token de outro servidor/tenant.
                             session.clear()
                             isLoggedIn = false
@@ -144,7 +171,7 @@ private fun LoginScreen(api: PonteApi, session: SecureSession, onLogin: () -> Un
     var error by remember { mutableStateOf<String?>(null) }
     Box(Modifier.fillMaxSize().background(Color(0xFFF7FAF8))) {
     Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(28.dp),
+        Modifier.fillMaxSize().padding(28.dp),
         verticalArrangement = Arrangement.Center
     ) {
         Box(Modifier.size(68.dp).clip(RoundedCornerShape(18.dp)).background(Green), contentAlignment = Alignment.Center) {
@@ -183,6 +210,7 @@ private fun LoginScreen(api: PonteApi, session: SecureSession, onLogin: () -> Un
             scope.launch {
                 try {
                     val token = api.login(email.trim(), password, mfaCode)
+                    api.clearMessageCache()
                     session.save(token)
                     onLogin()
                 } catch (e: Exception) { error = e.message ?: "Não foi possível conectar." }
@@ -207,7 +235,7 @@ private fun LoginScreen(api: PonteApi, session: SecureSession, onLogin: () -> Un
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun HomeScreen(api: PonteApi, refreshKey: Int, onChat: (ChatSummary) -> Unit,
+private fun HomeScreen(api: PonteApi, refreshKey: Int, lifecycle: Lifecycle, onChat: (ChatSummary) -> Unit,
                        onRefresh: () -> Unit, onSettings: () -> Unit,
                        onLogout: () -> Unit, onUnauthorized: () -> Unit) {
     val scope = rememberCoroutineScope()
@@ -221,25 +249,19 @@ private fun HomeScreen(api: PonteApi, refreshKey: Int, onChat: (ChatSummary) -> 
     var creating by remember { mutableStateOf(false) }
     var menu by remember { mutableStateOf(false) }
     var tab by remember { mutableIntStateOf(0) }
-    var accounts by remember { mutableStateOf<List<ZapAccount>>(emptyList()) }
-    var accountSelected by remember { mutableIntStateOf(0) }
-    LaunchedEffect(newChat) {
-        if(newChat)try{
-            accounts=api.accounts()
-            accountSelected=accounts.firstOrNull()?.id ?: 0
-        }catch(e:Exception){error=e.message}
-    }
-    LaunchedEffect(refreshKey) {
-        while (isActive) {
-            try {
-                chats = api.conversations()
-                error = null
-            } catch (e: ApiException) {
-                if (e.httpStatus == 401) { onUnauthorized(); return@LaunchedEffect }
-                error = e.message
-            } catch (e: Exception) { error = e.message }
-            loading = false
-            delay(12000)
+    LaunchedEffect(refreshKey, lifecycle) {
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (isActive) {
+                try {
+                    chats = api.conversations()
+                    error = null
+                } catch (e: ApiException) {
+                    if (e.httpStatus == 401) { onUnauthorized(); return@repeatOnLifecycle }
+                    error = e.message
+                } catch (e: Exception) { error = e.message }
+                loading = false
+                delay(1000)
+            }
         }
     }
     Scaffold(topBar = {
@@ -274,7 +296,7 @@ private fun HomeScreen(api: PonteApi, refreshKey: Int, onChat: (ChatSummary) -> 
     }, bottomBar = {
         NavigationBar(containerColor=Color(0xFFF6FAF7)) {
             val titles=listOf("Conversas","Contatos","Templates","Mais")
-            val icons=listOf(Icons.Default.Chat,Icons.Default.People,
+            val icons=listOf(Icons.AutoMirrored.Filled.Chat,Icons.Default.People,
                 Icons.Default.Description,Icons.Default.Apps)
             titles.forEachIndexed { index,title ->
                 NavigationBarItem(selected=tab==index,onClick={tab=index},
@@ -347,22 +369,6 @@ private fun HomeScreen(api: PonteApi, refreshKey: Int, onChat: (ChatSummary) -> 
             text = {
                 Column {
                     Text("Informe o número com código do país, sem + ou espaços.", fontSize = 13.sp)
-                    if(accounts.size>1) {
-                        var expanded by remember { mutableStateOf(false) }
-                        Box {
-                            OutlinedButton(onClick={expanded=true}){
-                                Text(accounts.find{it.id==accountSelected}?.name?:"Selecionar número")
-                                Icon(Icons.Default.ArrowDropDown,null)
-                            }
-                            DropdownMenu(expanded=expanded,onDismissRequest={expanded=false}){
-                                accounts.forEach { a ->
-                                    DropdownMenuItem(text={Text(a.name)},onClick={
-                                        accountSelected=a.id;expanded=false
-                                    })
-                                }
-                            }
-                        }
-                    }
                     Spacer(Modifier.height(12.dp))
                     OutlinedTextField(value = newPhone, onValueChange = { newPhone = it.filter(Char::isDigit) },
                         label = { Text("Telefone (ex.: 5535999999999)") },
@@ -376,8 +382,7 @@ private fun HomeScreen(api: PonteApi, refreshKey: Int, onChat: (ChatSummary) -> 
                     creating = true
                     scope.launch {
                         try {
-                            val id = if(accountSelected>0)api.createConversation(newPhone,accountSelected)
-                                else api.createConversation(newPhone)
+                            val id = api.createConversation(newPhone)
                             newChat = false
                             onChat(ChatSummary(id, newPhone, newPhone, "", "", 0))
                         } catch (e: Exception) { error = e.message }
@@ -399,31 +404,113 @@ private fun Avatar(name: String) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ChatScreen(chat: ChatSummary, api: PonteApi, onBack: () -> Unit, onUnauthorized: () -> Unit) {
+private fun ChatScreen(chat: ChatSummary, api: PonteApi, lifecycle: Lifecycle,
+                       onBack: () -> Unit, onUnauthorized: () -> Unit) {
+    BackHandler(onBack = onBack)
     val scope = rememberCoroutineScope()
     var messages by remember(chat.id) { mutableStateOf<List<ChatMessage>>(emptyList()) }
+    var pendingServerIds by remember(chat.id) { mutableStateOf<Map<String, String>>(emptyMap()) }
     var input by remember(chat.id) { mutableStateOf("") }
     var error by remember(chat.id) { mutableStateOf<String?>(null) }
     var sending by remember(chat.id) { mutableStateOf(false) }
+    var loadingOlder by remember(chat.id) { mutableStateOf(false) }
+    var hasMoreOlder by remember(chat.id) { mutableStateOf(false) }
+    var initialScrollDone by remember(chat.id) { mutableStateOf(false) }
     var showTemplate by remember(chat.id) { mutableStateOf(false) }
     var showInfo by remember(chat.id) { mutableStateOf(false) }
     val listState = rememberLazyListState()
-    LaunchedEffect(chat.id) {
-        while (isActive) {
-            try {
-                messages = api.messages(chat.id)
-                error = null
-            } catch (e: ApiException) {
-                if (e.httpStatus == 401) { onUnauthorized(); return@LaunchedEffect }
-                error = e.message
-            } catch (e: Exception) { error = e.message }
-            delay(6000)
+    LaunchedEffect(chat.id, lifecycle) {
+        try {
+            val cached = api.cachedLatestMessages(chat.id)
+            messages = cached.messages
+            pendingServerIds = cached.messages.filter { it.isPending && it.serverMessageId.isNotBlank() }
+                .associate { it.id to it.serverMessageId }
+            hasMoreOlder = cached.hasMore
+        } catch (_: Exception) { }
+        var firstFetch = true
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (isActive) {
+                try {
+                    if (firstFetch) {
+                        val page = api.latestMessages(chat.id)
+                        val pending = messages.filter { it.isPending }
+                        messages = (page.messages + pending).distinctBy { it.id }
+                            .sortedBy { it.id.toLongOrNull() ?: Long.MAX_VALUE }
+                        hasMoreOlder = page.hasMore
+                        if (messages.isNotEmpty()) listState.scrollToItem(messages.lastIndex)
+                        initialScrollDone = true
+                        firstFetch = false
+                    } else {
+                        val loaded = messages.filterNot { it.isPending }
+                        val afterId = loaded.mapNotNull { it.id.toLongOrNull() }
+                            .maxOrNull()?.toString() ?: "0"
+                        val statusIds = loaded.filter { it.direction == "outbound" }
+                            .takeLast(50).map { it.id }
+                        val atBottom = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index
+                            ?.let { it >= messages.lastIndex - 1 } ?: true
+                        val changed = api.syncMessages(
+                            chat.id, afterId, statusIds, pendingServerIds.values.toSet()
+                        )
+                        if (changed.isNotEmpty()) {
+                            val pendingByServerId = pendingServerIds.entries
+                                .associate { it.value to it.key }
+                            val merged = messages.toMutableList()
+                            var addedNew = false
+                            changed.forEach { remote ->
+                                val pendingLocalId = pendingByServerId[remote.id]
+                                if (pendingLocalId != null) {
+                                    if (remote.status.equals("accepted", ignoreCase = true)) return@forEach
+                                    merged.removeAll { it.id == pendingLocalId }
+                                    pendingServerIds = pendingServerIds - pendingLocalId
+                                }
+                                val existingIndex = merged.indexOfFirst { it.id == remote.id }
+                                if (existingIndex >= 0) merged[existingIndex] = remote
+                                else { merged += remote; addedNew = true }
+                            }
+                            messages = merged.distinctBy { it.id }
+                                .sortedBy { it.id.toLongOrNull() ?: Long.MAX_VALUE }
+                            if (atBottom && addedNew && messages.isNotEmpty())
+                                listState.animateScrollToItem(messages.lastIndex)
+                        }
+                    }
+                    error = null
+                } catch (e: ApiException) {
+                    if (e.httpStatus == 401) { onUnauthorized(); return@repeatOnLifecycle }
+                    error = e.message
+                } catch (e: Exception) { error = e.message }
+                delay(1000)
+            }
         }
     }
-    LaunchedEffect(messages.size) {
-        if (messages.isNotEmpty()) listState.animateScrollToItem(messages.lastIndex)
+    LaunchedEffect(listState, chat.id) {
+        snapshotFlow { listState.firstVisibleItemIndex }.distinctUntilChanged().collect { firstVisible ->
+            if (initialScrollDone && firstVisible <= 2 && hasMoreOlder && !loadingOlder) {
+                val cursor = messages.firstOrNull { !it.isPending }?.id ?: return@collect
+                val oldIndex = listState.firstVisibleItemIndex
+                val oldOffset = listState.firstVisibleItemScrollOffset
+                loadingOlder = true
+                try {
+                    val page = api.olderMessages(chat.id, cursor)
+                    val additions = page.messages.filter { remote -> messages.none { it.id == remote.id } }
+                    if (additions.isNotEmpty()) {
+                        messages = (additions + messages).distinctBy { it.id }
+                            .sortedBy { it.id.toLongOrNull() ?: Long.MAX_VALUE }
+                        hasMoreOlder = page.hasMore
+                        listState.scrollToItem(oldIndex + additions.size, oldOffset)
+                    } else {
+                        hasMoreOlder = false
+                    }
+                } catch (e: ApiException) {
+                    if (e.httpStatus == 401) onUnauthorized() else error = e.message
+                    hasMoreOlder = false
+                } catch (e: Exception) {
+                    error = e.message
+                    hasMoreOlder = false
+                } finally { loadingOlder = false }
+            }
+        }
     }
-    Scaffold(topBar = {
+    Scaffold(modifier = Modifier.imePadding(), topBar = {
         Row(Modifier.fillMaxWidth().background(Color(0xFF053D30)).padding(8.dp),
             verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Voltar",tint=Color.White) }
@@ -456,13 +543,26 @@ private fun ChatScreen(chat: ChatSummary, api: PonteApi, onBack: () -> Unit, onU
                 FilledIconButton(enabled = !sending && input.isNotBlank(), onClick = {
                     val text = input.trim()
                     sending = true
+                    val pendingId = "pending-${UUID.randomUUID()}"
+                    val pending = ChatMessage(
+                        id = pendingId, text = text, direction = "outbound",
+                        time = LocalTime.now().toString().take(5), status = "pending", isPending = true
+                    )
+                    messages = messages + pending
+                    scope.launch { if (messages.isNotEmpty()) listState.animateScrollToItem(messages.lastIndex) }
                     scope.launch {
                         try {
-                            api.send(chat.id, text)
+                            api.cachePendingMessage(chat.id, pending)
+                            val receipt = api.send(chat.id, text)
+                            api.attachPendingMessageId(chat.id, pendingId, receipt.id)
+                            pendingServerIds = pendingServerIds + (pendingId to receipt.id)
                             input = ""
-                            messages = api.messages(chat.id)
                             error = null
-                        } catch (e: Exception) { error = e.message }
+                        } catch (e: Exception) {
+                            try { api.removePendingMessage(chat.id, pendingId) } catch (_: Exception) { }
+                            messages = messages.filterNot { it.id == pendingId }
+                            error = e.message
+                        }
                         finally { sending = false }
                     }
                 }, colors = IconButtonDefaults.filledIconButtonColors(containerColor = Green)) {
@@ -471,41 +571,291 @@ private fun ChatScreen(chat: ChatSummary, api: PonteApi, onBack: () -> Unit, onU
             }
         }
     }) { padding ->
-        LazyColumn(Modifier.padding(padding).fillMaxSize().background(ChatBackground)
-            .padding(horizontal = 12.dp), state = listState,
-            contentPadding = PaddingValues(vertical = 14.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(messages, key = { it.id }) { message ->
-                val outbound = message.direction == "outbound"
-                Row(Modifier.fillMaxWidth(),
-                    horizontalArrangement = if (outbound) Arrangement.End else Arrangement.Start) {
-                    Column(Modifier.widthIn(max = 305.dp)
-                        .clip(RoundedCornerShape(14.dp))
-                        .background(if (outbound) LightGreen else Color.White)
-                        .padding(horizontal = 12.dp, vertical = 8.dp)) {
-                        Text(message.text.ifBlank { "[Mensagem sem texto]" }, color = Ink, fontSize = 15.sp)
-                        Row(verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
-                            Text(message.time.takeLast(5), color = Color.Gray, fontSize = 10.sp)
-                            if (outbound) {
-                                Spacer(Modifier.width(5.dp))
-                                Text(when (message.status) {
-                                    "read" -> "✓✓"
-                                    "delivered" -> "✓✓"
-                                    else -> "✓"
-                                }, color = if (message.status == "read") Green else Color.Gray, fontSize = 12.sp)
-                            }
-                        }
-                    }
+        Column(Modifier.padding(padding).fillMaxSize().background(ChatBackground)) {
+            if (loadingOlder) LinearProgressIndicator(Modifier.fillMaxWidth())
+            LazyColumn(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 12.dp), state = listState,
+                contentPadding = PaddingValues(vertical = 14.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(messages, key = { it.id }) { message ->
+                    ChatMessageBubble(message, api, onUnauthorized)
                 }
             }
         }
     }
-    if(showTemplate) {
-        ZapTemplateDialog(chat,api,onDismiss={showTemplate=false},onSent={
-            showTemplate=false
-            scope.launch{try{messages=api.messages(chat.id)}catch(_:Exception){}}
-        })
-    }
+    if(showTemplate) ZapTemplateDialog(onDismiss={showTemplate=false})
     if(showInfo) ZapContactInfo(chat,onDismiss={showInfo=false})
+}
+
+@Composable
+private fun ChatMessageBubble(message: ChatMessage, api: PonteApi, onUnauthorized: () -> Unit) {
+    val outbound = message.direction == "outbound"
+    if (message.isPending) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            Row(Modifier.clip(RoundedCornerShape(14.dp)).background(LightGreen)
+                .padding(horizontal = 14.dp, vertical = 11.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+                CircularProgressIndicator(Modifier.size(17.dp), strokeWidth = 2.dp, color = Green)
+                Text("Carregando mensagem…", color = Ink, fontSize = 13.sp)
+                Text(message.time.takeLast(5), color = Color.Gray, fontSize = 10.sp)
+            }
+        }
+        return
+    }
+    val kind = resolvedMediaKind(message)
+    val titleAndIcon = when (kind) {
+        "image" -> Icons.Default.Image to "Imagem"
+        "audio" -> Icons.Default.MusicNote to "Áudio"
+        "video" -> Icons.Default.Videocam to "Vídeo"
+        "sticker" -> Icons.Default.EmojiEmotions to "Sticker"
+        "document" -> Icons.Default.AttachFile to "Documento"
+        else -> null
+    }
+    var attachment by remember(message.id) { mutableStateOf<MediaAttachment?>(null) }
+    var loading by remember(message.id) { mutableStateOf(false) }
+    var mediaError by remember(message.id) { mutableStateOf<String?>(null) }
+    var retry by remember(message.id) { mutableIntStateOf(0) }
+    LaunchedEffect(message.id, message.hasMedia, retry) {
+        if (message.hasMedia) {
+            loading = true
+            mediaError = null
+            try {
+                attachment = api.downloadMedia(message.id, message.mediaFilename, message.mediaMime)
+            } catch (e: Exception) {
+                if (e is ApiException && e.httpStatus == 401) onUnauthorized()
+                mediaError = e.message ?: "Não foi possível baixar o anexo."
+            } finally {
+                loading = false
+            }
+        }
+    }
+
+    val body = message.text.trim()
+    val isMediaPlaceholder = body.startsWith("Anexo recebido:", ignoreCase = true) ||
+        body.startsWith("[Mídia ", ignoreCase = true) ||
+        (message.mediaFilename.isNotBlank() && body.equals("Anexo: ${message.mediaFilename}", ignoreCase = true))
+    Row(Modifier.fillMaxWidth(),
+        horizontalArrangement = if (outbound) Arrangement.End else Arrangement.Start) {
+        Column(Modifier.widthIn(max = 305.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(if (outbound) LightGreen else Color.White)
+            .padding(horizontal = 12.dp, vertical = 8.dp)) {
+            if (titleAndIcon != null) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(titleAndIcon.first, contentDescription = null, tint = Green,
+                        modifier = Modifier.size(22.dp))
+                    Spacer(Modifier.width(7.dp))
+                    Text(when (kind) {
+                        "image" -> "Imagem recebida"
+                        "audio" -> "Áudio recebido"
+                        "video" -> "Vídeo recebido"
+                        "sticker" -> "Sticker recebido"
+                        else -> message.mediaFilename.ifBlank { "Documento recebido" }
+                    }, color = Ink, fontSize = 14.sp, fontWeight = FontWeight.Medium,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                Spacer(Modifier.height(6.dp))
+                when {
+                    !message.hasMedia -> Text("Arquivo de mídia indisponível nesta mensagem.",
+                        color = Color.Gray, fontSize = 12.sp)
+                    loading -> Row(verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                        Text("Carregando anexo…", color = Color.Gray, fontSize = 12.sp)
+                    }
+                    mediaError != null -> Column {
+                        Text(mediaError.orEmpty(), color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+                        TextButton(onClick = { retry++ }, contentPadding = PaddingValues(horizontal = 4.dp)) {
+                            Text("Tentar novamente")
+                        }
+                    }
+                    attachment != null -> when (kind) {
+                        "image", "sticker" -> ImageMessageContent(attachment!!, kind == "sticker")
+                        "audio" -> AudioMessageContent(attachment!!)
+                        "video" -> VideoMessageContent(attachment!!)
+                        else -> OpenDocumentButton(attachment!!)
+                    }
+                }
+                if (body.isNotBlank() && !isMediaPlaceholder) {
+                    Spacer(Modifier.height(5.dp))
+                    Text(body, color = Ink, fontSize = 14.sp)
+                }
+            } else {
+                Text(body.ifBlank { "[Mensagem sem texto]" }, color = Ink, fontSize = 15.sp)
+            }
+            Row(verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
+                Text(message.time.takeLast(5), color = Color.Gray, fontSize = 10.sp)
+                if (outbound) {
+                    Spacer(Modifier.width(5.dp))
+                    Text(when (message.status) {
+                        "read" -> "✓✓"
+                        "delivered" -> "✓✓"
+                        else -> "✓"
+                    }, color = if (message.status == "read") Green else Color.Gray, fontSize = 12.sp)
+                }
+            }
+        }
+    }
+}
+
+private fun resolvedMediaKind(message: ChatMessage): String? {
+    val type = message.type.lowercase()
+    if (type in setOf("image", "audio", "video", "sticker", "document")) return type
+    val mime = message.mediaMime.lowercase()
+    return when {
+        mime.startsWith("image/") -> "image"
+        mime.startsWith("audio/") -> "audio"
+        mime.startsWith("video/") -> "video"
+        mime.isNotBlank() -> "document"
+        message.hasMedia -> "document"
+        else -> null
+    }
+}
+
+@Composable
+private fun ImageMessageContent(attachment: MediaAttachment, sticker: Boolean) {
+    var image by remember(attachment.file.absolutePath) { mutableStateOf<ImageBitmap?>(null) }
+    var failed by remember(attachment.file.absolutePath) { mutableStateOf(false) }
+    LaunchedEffect(attachment.file.absolutePath) {
+        image = withContext(Dispatchers.IO) { decodeMessageImage(attachment.file) }
+        failed = image == null
+    }
+    when {
+        image != null -> Image(image!!,
+            contentDescription = if (sticker) "Sticker recebido" else "Imagem recebida",
+            contentScale = ContentScale.Fit,
+            modifier = if (sticker) Modifier.sizeIn(maxWidth = 190.dp, maxHeight = 190.dp)
+                else Modifier.fillMaxWidth().heightIn(max = 280.dp))
+        failed -> Text("Não foi possível abrir esta imagem.", color = MaterialTheme.colorScheme.error,
+            fontSize = 12.sp)
+        else -> LinearProgressIndicator(Modifier.fillMaxWidth())
+    }
+}
+
+private fun decodeMessageImage(file: File): ImageBitmap? {
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeFile(file.absolutePath, bounds)
+    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+    var sample = 1
+    val maxDimension = 1800
+    while (bounds.outWidth / sample > maxDimension || bounds.outHeight / sample > maxDimension) sample *= 2
+    return BitmapFactory.decodeFile(file.absolutePath,
+        BitmapFactory.Options().apply { inSampleSize = sample })?.asImageBitmap()
+}
+
+@Composable
+private fun AudioMessageContent(attachment: MediaAttachment) {
+    val player = remember(attachment.file.absolutePath) { MediaPlayer() }
+    var prepared by remember(attachment.file.absolutePath) { mutableStateOf(false) }
+    var playing by remember(attachment.file.absolutePath) { mutableStateOf(false) }
+    var failed by remember(attachment.file.absolutePath) { mutableStateOf(false) }
+    var duration by remember(attachment.file.absolutePath) { mutableIntStateOf(0) }
+    var position by remember(attachment.file.absolutePath) { mutableIntStateOf(0) }
+    DisposableEffect(player, attachment.file.absolutePath) {
+        try {
+            player.setOnPreparedListener {
+                duration = it.duration.coerceAtLeast(0)
+                prepared = true
+            }
+            player.setOnCompletionListener {
+                playing = false
+                position = 0
+                it.seekTo(0)
+            }
+            player.setOnErrorListener { _, _, _ ->
+                failed = true
+                playing = false
+                true
+            }
+            player.setDataSource(attachment.file.absolutePath)
+            player.prepareAsync()
+        } catch (_: Exception) {
+            failed = true
+        }
+        onDispose { try { player.release() } catch (_: Exception) { } }
+    }
+    LaunchedEffect(playing, prepared, failed) {
+        while (playing && prepared && !failed) {
+            try { position = player.currentPosition } catch (_: Exception) { playing = false }
+            delay(250)
+        }
+    }
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+        FilledIconButton(enabled = prepared && !failed, onClick = {
+            try {
+                if (playing) { player.pause(); playing = false }
+                else { player.start(); playing = true }
+            } catch (_: Exception) { failed = true }
+        }) {
+            Icon(if (playing) Icons.Default.Pause else Icons.Default.PlayArrow,
+                contentDescription = if (playing) "Pausar áudio" else "Reproduzir áudio")
+        }
+        Slider(value = position.toFloat().coerceIn(0f, duration.coerceAtLeast(1).toFloat()),
+            valueRange = 0f..duration.coerceAtLeast(1).toFloat(),
+            onValueChange = { position = it.toInt() },
+            onValueChangeFinished = { try { player.seekTo(position) } catch (_: Exception) { } },
+            enabled = prepared && !failed, modifier = Modifier.weight(1f))
+        Text(formatMediaTime(position), fontSize = 10.sp, color = Color.Gray)
+    }
+    if (failed) Text("O Android não conseguiu reproduzir este áudio.",
+        color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+}
+
+@Composable
+private fun VideoMessageContent(attachment: MediaAttachment) {
+    var view by remember(attachment.file.absolutePath) { mutableStateOf<VideoView?>(null) }
+    var failed by remember(attachment.file.absolutePath) { mutableStateOf(false) }
+    DisposableEffect(attachment.file.absolutePath) {
+        onDispose { try { view?.stopPlayback() } catch (_: Exception) { } }
+    }
+    AndroidView(
+        factory = { context ->
+            VideoView(context).apply {
+                val controller = MediaController(context)
+                controller.setAnchorView(this)
+                setMediaController(controller)
+                setOnErrorListener { _, _, _ -> failed = true; true }
+                setVideoPath(attachment.file.absolutePath)
+                view = this
+            }
+        },
+        modifier = Modifier.fillMaxWidth().height(210.dp).clip(RoundedCornerShape(10.dp))
+    )
+    if (failed) Text("O Android não conseguiu reproduzir este vídeo.",
+        color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+}
+
+@Composable
+private fun OpenDocumentButton(attachment: MediaAttachment) {
+    val context = LocalContext.current
+    var error by remember(attachment.file.absolutePath) { mutableStateOf(false) }
+    OutlinedButton(onClick = {
+        try {
+            val uri = FileProvider.getUriForFile(context,
+                "${BuildConfig.APPLICATION_ID}.fileprovider", attachment.file)
+            val mime = attachment.mimeType.ifBlank { "application/octet-stream" }
+            val intent = Intent(Intent.ACTION_VIEW).setDataAndType(uri, mime)
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            context.startActivity(Intent.createChooser(intent, "Abrir anexo"))
+            error = false
+        } catch (_: ActivityNotFoundException) {
+            error = true
+            Toast.makeText(context, "Não há aplicativo para abrir este arquivo.", Toast.LENGTH_SHORT).show()
+        } catch (_: Exception) {
+            error = true
+        }
+    }, modifier = Modifier.fillMaxWidth()) {
+        Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null)
+        Spacer(Modifier.width(6.dp))
+        Text("Abrir ${attachment.filename.ifBlank { "anexo" }}", maxLines = 1,
+            overflow = TextOverflow.Ellipsis)
+    }
+    if (error) Text("Não foi possível abrir o arquivo.", color = MaterialTheme.colorScheme.error,
+        fontSize = 12.sp)
+}
+
+private fun formatMediaTime(milliseconds: Int): String {
+    val seconds = milliseconds.coerceAtLeast(0) / 1000
+    return String.format(Locale.ROOT, "%d:%02d", seconds / 60, seconds % 60)
 }

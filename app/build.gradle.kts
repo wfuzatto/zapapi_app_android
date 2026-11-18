@@ -13,9 +13,9 @@ android {
         applicationId = "br.com.prodatastelecom.zapapi"
         minSdk = 26
         targetSdk = 35
-        versionCode = 6
-        versionName = "1.0.3"
-        buildConfigField("String", "API_BASE_URL", "\"https://prodatastelecom.com.br/sites/whatsapp_gateway/mobile-api/v1/\"")
+        versionCode = 13
+        versionName = "1.1.0"
+        buildConfigField("String", "PLATFORM_BASE_URL", "\"https://zapapi.inf.br\"")
     }
     buildFeatures { compose = true; buildConfig = true }
     compileOptions {

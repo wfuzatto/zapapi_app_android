@@ -2,7 +2,9 @@ name: Publicar APK V1 no GitHub Releases
 on:
   push:
     branches: [main]
-    paths: ['.github/workflows/release-apk-v1.yml']
+    paths:
+      - '.github/workflows/release-apk-v1.yml'
+      - 'app/build.gradle.kts'
   workflow_dispatch:
 permissions:
   contents: write
@@ -20,17 +22,26 @@ jobs:
           gradle-version: '8.11.1'
       - name: Compilar APK Android V1
         run: gradle --no-daemon :app:assembleDebug
-      - name: Publicar link estável do APK
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Ler versão do APK
+        id: version
         shell: bash
         run: |
           set -euo pipefail
-          VERSION=v1.0.3
-          FILENAME=ZapAPI_Messenger_V1_1.0.3.apk
+          VERSION_NAME="$(sed -nE 's/^[[:space:]]*versionName = "([^"]+)".*/\1/p' app/build.gradle.kts | head -n1)"
+          [[ "$VERSION_NAME" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          echo "version_name=$VERSION_NAME" >> "$GITHUB_OUTPUT"
+      - name: Publicar link estável do APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION_NAME: ${{ steps.version.outputs.version_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="v${VERSION_NAME}"
+          FILENAME="ZapAPI_Messenger_V1_${VERSION_NAME}.apk"
           cp app/build/outputs/apk/debug/app-debug.apk "$FILENAME"
           if gh release view "$VERSION" >/dev/null 2>&1; then
             gh release upload "$VERSION" "$FILENAME" --clobber
           else
-            gh release create "$VERSION" "$FILENAME" --target "${GITHUB_SHA}" --title "ZapAPI Messenger V1 1.0.3 (teste)" --notes "APK Android de teste da V1. Corrige safe area no Android 15: cabeçalho abaixo da barra de status, campo de mensagem acima da navegação e ajuste com teclado. Instalacao manual; build debug, nao e uma release de producao." --prerelease
+            gh release create "$VERSION" "$FILENAME" --target "${GITHUB_SHA}" --title "ZapAPI Messenger V1 ${VERSION_NAME} (teste)" --notes "APK de teste Android da V1. Build debug para instalação interna; não é uma release de produção." --prerelease
           fi

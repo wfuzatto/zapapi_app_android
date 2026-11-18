@@ -4,7 +4,7 @@ import android.content.Context
 import java.net.URI
 
 data class ServerConfig(
-    val baseUrl: String = "https://prodatastelecom.com.br/sites/whatsapp_gateway",
+    val baseUrl: String = BuildConfig.PLATFORM_BASE_URL,
     val apiPrefix: String = "mobile-api/v1",
     val loginPath: String = "auth/login",
     val conversationsPath: String = "conversations",
@@ -12,7 +12,7 @@ data class ServerConfig(
     val sendPath: String = "conversations/{id}/messages",
     val createPath: String = "conversations",
     val contactsPath: String = "contacts",
-    val mediaPath: String = "media",
+    val mediaPath: String = "media/{id}",
     val pushPath: String = "devices",
     val logoutPath: String = "auth/logout",
     val workspace: String = "",
@@ -42,32 +42,52 @@ data class ServerConfig(
         return null
     }
 
-    fun normalized(): ServerConfig = copy(
-        baseUrl = baseUrl.trim().trimEnd('/'),
-        apiPrefix = apiPrefix.trim().trim('/'),
-        loginPath = loginPath.trim().trim('/'),
-        conversationsPath = conversationsPath.trim().trim('/'),
-        messagesPath = messagesPath.trim().trim('/'),
-        sendPath = sendPath.trim().trim('/'),
-        createPath = createPath.trim().trim('/'),
-        contactsPath = contactsPath.trim().trim('/'),
-        mediaPath = mediaPath.trim().trim('/'),
-        pushPath = pushPath.trim().trim('/'),
-        logoutPath = logoutPath.trim().trim('/'),
-        workspace = workspace.trim()
-    )
+    fun normalized(): ServerConfig {
+        val safePrefix = apiPrefix.trim().trim('/')
+        val trimmedBase = baseUrl.trim().trimEnd('/')
+        val apiSuffix = "/$safePrefix"
+        val safeBase = if (safePrefix.isNotEmpty() && trimmedBase.endsWith(apiSuffix, ignoreCase = true)) {
+            trimmedBase.dropLast(apiSuffix.length).trimEnd('/')
+        } else {
+            trimmedBase
+        }
+        return copy(
+            baseUrl = safeBase,
+            apiPrefix = safePrefix,
+            loginPath = loginPath.trim().trim('/'),
+            conversationsPath = conversationsPath.trim().trim('/'),
+            messagesPath = messagesPath.trim().trim('/'),
+            sendPath = sendPath.trim().trim('/'),
+            createPath = createPath.trim().trim('/'),
+            contactsPath = contactsPath.trim().trim('/'),
+            mediaPath = mediaPath.trim().trim('/'),
+            pushPath = pushPath.trim().trim('/'),
+            logoutPath = logoutPath.trim().trim('/'),
+            workspace = workspace.trim()
+        )
+    }
 
-    fun endpoint(path: String): String = "${baseUrl.trimEnd('/')}/${apiPrefix.trim('/')}/${path.trimStart('/')}"
+    fun endpoint(path: String): String {
+        val safe = normalized()
+        return "${safe.baseUrl}/${safe.apiPrefix}/${path.trimStart('/')}"
+    }
 }
 
 class ServerConfigStore(context: Context) {
     private val prefs = context.getSharedPreferences("ponte_mobile_server", Context.MODE_PRIVATE)
+    private val officialServerMigrationKey = "official_server_migration_v2"
+
+    /** Set the official host once on install/update; the caller clears old session/cache data. */
+    fun migrateToOfficialServer(): Boolean {
+        if (prefs.getBoolean(officialServerMigrationKey, false)) return false
+        save(ServerConfig())
+        prefs.edit().putBoolean(officialServerMigrationKey, true).apply()
+        return true
+    }
 
     fun load(): ServerConfig {
         val defaults = ServerConfig()
         return ServerConfig(
-            // Não reescrever o endereço da V1: o valor configurado deve ser respeitado.
-            // Versões antigas redirecionavam indevidamente Prodatas para zapapi.inf.br.
             baseUrl = prefs.getString("baseUrl", defaults.baseUrl) ?: defaults.baseUrl,
             apiPrefix = prefs.getString("apiPrefix", defaults.apiPrefix) ?: defaults.apiPrefix,
             loginPath = prefs.getString("loginPath", defaults.loginPath) ?: defaults.loginPath,

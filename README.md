@@ -1,6 +1,6 @@
 # Ponte Mobile — ZapAPI Android
 
-Aplicativo Android nativo (Kotlin + Jetpack Compose) para acompanhar as conversas da plataforma Ponte / WhatsApp Gateway **V1**, sem utilizar WhatsApp Web nem inserir credenciais da Meta no celular.
+Aplicativo Android nativo (Kotlin + Jetpack Compose) para acompanhar as conversas da plataforma ZapApi, sem utilizar WhatsApp Web nem inserir credenciais da Meta no celular.
 
 ## Estado
 
@@ -8,7 +8,10 @@ Aplicativo Android nativo (Kotlin + Jetpack Compose) para acompanhar as conversa
 - Login próprio do backend; token de sessão armazenado com Android Keystore AES-GCM.
 - Cliente HTTP para `/mobile-api/v1/`; atualização periódica enquanto o app está em primeiro plano.
 - Firebase Cloud Messaging preparado: serviço de mensagens e sincronização do token FCM quando `google-services.json` for configurado.
-- **A API `/mobile-api/v1/` é um contrato novo; precisa ser implementada na V1.** O fato de `/webhook` e da central web funcionarem não significa que a API móvel já exista.
+- A API móvel é servida pelo domínio oficial `zapapi.inf.br`. O app usa autenticação móvel própria e não reutiliza cookies do painel.
+- A aba Contatos usa conversas já existentes; o app não inclui uma interface móvel para enviar templates.
+- O chat carrega imagens, stickers, áudios, vídeos e documentos por uma rota móvel autenticada; os arquivos ficam no cache privado do aplicativo.
+- As telas respeitam as barras de status/navegação e o compositor do chat acompanha dinamicamente a altura do teclado.
 - Não contém token Meta, App Secret ou credenciais privadas.
 
 ## Requisitos
@@ -21,13 +24,13 @@ Para habilitar Firebase: crie o app Android no Firebase com package `br.com.prod
 
 Veja `docs/BACKEND_CONTRACT.md` para os endpoints necessários e política de segurança.
 
-## Próxima etapa
+## Backend oficial ZapApi
 
-Implementar o adaptador `/mobile-api/v1/` no servidor da V1 com autenticação de usuário, isolamento tenant e políticas de 24 horas / templates da Meta. Não reutilizar cookies web nem entregar tokens da Cloud API ao dispositivo.
+O endereço padrão é `https://zapapi.inf.br` com o prefixo `mobile-api/v1`. Nas configurações, também é possível informar a URL completa terminada em `/mobile-api/v1`; o app remove esse sufixo antes de montar as rotas. Ao atualizar uma instalação existente, o app migra para o domínio oficial, encerra a sessão anterior e limpa o cache local.
 
 
-## Android v1.0.0 — ZapApi Messenger
+## Android v1.1.0 — ZapApi Messenger
 
-O APK de teste é compilado pelo GitHub Actions após cada push e aparece em **Actions → Android — compilação debug → Artifacts → zapapi-messenger-debug**. A V2 não foi modificada. O endpoint inicial é `https://zapapi.inf.br/mobile-api/v1/`, configurável pela engrenagem no login; alterar o servidor invalida a sessão local. O backend V1 possui login de tenant, conversas, contatos e templates aprovados. Configurar o FCM é opcional para compilar; o backend precisa de infraestrutura própria para enviar pushes.
+O APK de teste é compilado pelo GitHub Actions e pode ser instalado internamente. O endpoint inicial é `https://zapapi.inf.br/mobile-api/v1/`, configurável pela engrenagem no login; alterar o servidor invalida a sessão local. Configurar o FCM é opcional para compilar; o backend precisa de infraestrutura própria para enviar pushes.
 
 O APK gerado no CI é **debug assinado com chave de desenvolvimento**, adequado para instalação interna/teste, não para Play Store. 

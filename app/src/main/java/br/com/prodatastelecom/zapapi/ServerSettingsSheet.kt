@@ -44,13 +44,17 @@ fun ServerSettingsSheet(
                 Spacer(Modifier.width(10.dp))
                 Text("Configurações do servidor", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
             }
-            Text("Acesso ao ZapApi V1 • HTTPS obrigatório • Sem credenciais da Meta no aplicativo.",
+            Text("Acesso à API móvel oficial ZapApi • HTTPS obrigatório • Sem credenciais da Meta no aplicativo.",
                 style = MaterialTheme.typography.bodySmall)
 
             Text("Servidor", style = MaterialTheme.typography.titleMedium)
-            SettingField("URL base da plataforma", draft.baseUrl) {
+            SettingField("URL da plataforma ou URL completa da API", draft.baseUrl) {
                 draft = draft.copy(baseUrl = it); validationError = null
             }
+            Text(
+                "Padrão: https://zapapi.inf.br. O prefixo mobile-api/v1 pode estar na URL; o app evita duplicar essa rota.",
+                style = MaterialTheme.typography.bodySmall
+            )
             SettingField("Prefixo da API móvel", draft.apiPrefix) {
                 draft = draft.copy(apiPrefix = it)
             }
@@ -66,7 +70,7 @@ fun ServerSettingsSheet(
             SettingField("Enviar mensagem (POST, {id})", draft.sendPath) { draft = draft.copy(sendPath = it) }
             SettingField("Iniciar conversa (POST)", draft.createPath) { draft = draft.copy(createPath = it) }
             SettingField("Listar contatos (reservado)", draft.contactsPath) { draft = draft.copy(contactsPath = it) }
-            SettingField("Upload de mídia (reservado)", draft.mediaPath) { draft = draft.copy(mediaPath = it) }
+            SettingField("Ler mídia da mensagem (GET, {id})", draft.mediaPath) { draft = draft.copy(mediaPath = it) }
             SettingField("Firebase / registrar dispositivo (POST)", draft.pushPath) { draft = draft.copy(pushPath = it) }
             SettingField("Logout (POST)", draft.logoutPath) { draft = draft.copy(logoutPath = it) }
 
@@ -129,7 +133,7 @@ fun ServerSettingsSheet(
                     modifier = Modifier.weight(1f)
                 ) { Text("Salvar") }
             }
-            Text("Se o teste mostrar HTTP 302, a rota ainda redireciona. É preciso instalar a API móvel JSON no backend V1; alterar o endereço não transforma uma página web em API.",
+            Text("Se o teste mostrar HTTP 302, a rota está redirecionando. O servidor ZapApi precisa responder JSON na API móvel; alterar o endereço não transforma uma página web em API.",
                 style = MaterialTheme.typography.bodySmall)
         }
     }
