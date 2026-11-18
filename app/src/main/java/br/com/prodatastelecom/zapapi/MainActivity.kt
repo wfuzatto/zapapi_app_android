@@ -5,6 +5,7 @@ import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.graphics.BitmapFactory
 import android.media.MediaPlayer
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.widget.MediaController
@@ -847,7 +848,7 @@ private fun VideoMessageContent(attachment: MediaAttachment) {
                 controller.setAnchorView(this)
                 setMediaController(controller)
                 setOnErrorListener { _, _, _ -> failed = true; true }
-                setVideoPath(attachment.file.absolutePath)
+                setVideoURI(Uri.fromFile(attachment.file))
                 view = this
             }
         },
