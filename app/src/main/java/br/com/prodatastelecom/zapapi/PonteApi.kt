@@ -65,6 +65,7 @@ data class MessageTemplate(
 )
 data class MediaAttachment(val file: File, val mimeType: String, val filename: String)
 class ApiException(val httpStatus: Int, message: String): Exception(message)
+data class LoginSession(val accessToken: String, val cacheScope: String)
 
 /** A sessão do backend NÃO é um token Meta e não sai do app para outros hosts. */
 class SecureSession(context: Context) {
@@ -82,25 +83,42 @@ class SecureSession(context: Context) {
             generateKey()
         }
     }
-    fun save(token: String) {
+    private fun encrypt(value: String): String {
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, key())
-        val data = cipher.iv + cipher.doFinal(token.toByteArray(Charsets.UTF_8))
-        prefs.edit().putString("ciphertext", Base64.encodeToString(data, Base64.NO_WRAP)).apply()
+        val data = cipher.iv + cipher.doFinal(value.toByteArray(Charsets.UTF_8))
+        return Base64.encodeToString(data, Base64.NO_WRAP)
+    }
+    private fun decrypt(encoded: String): String {
+        val bytes = Base64.decode(encoded, Base64.NO_WRAP)
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, bytes.copyOfRange(0, 12)))
+        return String(cipher.doFinal(bytes.copyOfRange(12, bytes.size)), Charsets.UTF_8)
+    }
+    fun save(token: String, cacheScope: String) {
+        prefs.edit()
+            .putString("ciphertext", encrypt(token))
+            .putString("cache_scope_ciphertext", encrypt(cacheScope))
+            .apply()
     }
     fun read(): String? {
         val encoded = prefs.getString("ciphertext", null) ?: return null
         return try {
-            val bytes = Base64.decode(encoded, Base64.NO_WRAP)
-            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-            cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, bytes.copyOfRange(0, 12)))
-            String(cipher.doFinal(bytes.copyOfRange(12, bytes.size)), Charsets.UTF_8)
+            decrypt(encoded)
         } catch (_: Exception) {
             clear()
             null
         }
     }
-    fun clear() { prefs.edit().remove("ciphertext").apply() }
+    fun readCacheScope(): String? {
+        val encoded = prefs.getString("cache_scope_ciphertext", null) ?: return null
+        return try { decrypt(encoded) } catch (_: Exception) {
+            prefs.edit().remove("cache_scope_ciphertext").apply()
+            null
+        }
+    }
+    fun clearToken() { prefs.edit().remove("ciphertext").apply() }
+    fun clear() { prefs.edit().remove("ciphertext").remove("cache_scope_ciphertext").apply() }
 }
 
 class PonteApi(private val session: SecureSession, private val settings: ServerConfigStore) {
@@ -197,21 +215,33 @@ class PonteApi(private val session: SecureSession, private val settings: ServerC
             ". HTTP 302 não é sucesso de autenticação."
     }
 
-    suspend fun login(email: String, password: String, mfaCode: String = ""): String {
+    suspend fun login(email: String, password: String, mfaCode: String = ""): LoginSession {
         val code = mfaCode.filter(Char::isDigit)
         if (code.isNotEmpty() && code.length != 6)
             throw ApiException(400, "O código autenticador deve conter seis dígitos.")
         val result = request(settings.load().loginPath, "POST",
             JSONObject().put("email", email).put("password", password)
                 .put("mfa_code", code), false)
-        return result.optString("access_token").takeIf { it.length >= 20 }
+        val token = result.optString("access_token").takeIf { it.length >= 20 }
             ?: throw ApiException(502,
                 "A API não retornou access_token válido. O login do painel web não é a API móvel.")
+        val user = result.optJSONObject("user") ?: JSONObject()
+        val tenant = user.optString("tenant_slug")
+            .ifBlank { user.optString("company").ifBlank { email.trim().lowercase() } }
+        val cfg = settings.load().normalized()
+        val cacheScope = java.security.MessageDigest.getInstance("SHA-256")
+            .digest("${cfg.baseUrl.lowercase()}|${cfg.apiPrefix}|${cfg.workspace}|$tenant".toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+        return LoginSession(token, cacheScope)
     }
 
-    suspend fun conversations(): List<ChatSummary> {
+    suspend fun cachedConversations(): List<ChatSummary> = withContext(Dispatchers.IO) {
+        messageCache.conversations(messageCacheKey())
+    }
+
+    suspend fun conversations(): List<ChatSummary> = withContext(Dispatchers.IO) {
         val items = request(settings.load().conversationsPath).optJSONArray("data") ?: JSONArray()
-        return (0 until items.length()).mapNotNull { i ->
+        val conversations = (0 until items.length()).mapNotNull { i ->
             val row = items.optJSONObject(i) ?: return@mapNotNull null
             ChatSummary(row.optString("id"), row.optString("name").ifBlank { row.optString("phone") },
                 row.optString("phone"), row.optString("last_message"), row.optString("updated_at"),
@@ -219,13 +249,40 @@ class PonteApi(private val session: SecureSession, private val settings: ServerC
                 row.optBoolean("has_photo"), row.optString("photo_version"),
                 row.optLong("read_through_id", 0L))
         }.filter { it.id.isNotBlank() }
+        messageCache.saveConversations(stableMessageCacheKey(), conversations)
+        conversations
     }
 
     private fun messageCacheKey(): String {
         val token = session.read() ?: throw ApiException(401, "Faça login novamente.")
-        return java.security.MessageDigest.getInstance("SHA-256")
+        session.readCacheScope()?.takeIf { it.isNotBlank() }?.let { return it }
+        return legacyMessageCacheKey(token)
+    }
+
+    private fun legacyMessageCacheKey(token: String): String =
+        java.security.MessageDigest.getInstance("SHA-256")
             .digest(token.toByteArray(Charsets.UTF_8))
             .joinToString("") { "%02x".format(it) }
+
+    /** Migrates existing token-keyed SQLite data once, so an expired token doesn't cold-start the chat. */
+    private suspend fun stableMessageCacheKey(): String {
+        session.readCacheScope()?.takeIf { it.isNotBlank() }?.let { return it }
+        val token = session.read() ?: throw ApiException(401, "Faça login novamente.")
+        val oldKey = legacyMessageCacheKey(token)
+        return try {
+            val identity = request("me")
+            val tenant = identity.optString("tenant_slug")
+                .ifBlank { identity.optString("company").ifBlank { "default" } }
+            val cfg = settings.load().normalized()
+            val scope = java.security.MessageDigest.getInstance("SHA-256")
+                .digest("${cfg.baseUrl.lowercase()}|${cfg.apiPrefix}|${cfg.workspace}|$tenant".toByteArray(Charsets.UTF_8))
+                .joinToString("") { "%02x".format(it) }
+            messageCache.rekeyAccount(oldKey, scope)
+            session.save(token, scope)
+            scope
+        } catch (_: Exception) {
+            oldKey
+        }
     }
 
     fun clearMessageCache() = messageCache.clearAll()
@@ -305,8 +362,9 @@ class PonteApi(private val session: SecureSession, private val settings: ServerC
         }
 
     suspend fun latestMessages(conversationId: String): MessagePage = withContext(Dispatchers.IO) {
-        val key = messageCacheKey()
+        var key = messageCacheKey()
         val result = request(messagesPath(conversationId) + "?limit=${LocalMessageCache.PAGE_SIZE}")
+        key = stableMessageCacheKey()
         val raw = parseMessages(result.optJSONArray("data") ?: JSONArray())
         val pageMessages = raw.takeLast(LocalMessageCache.PAGE_SIZE)
         messageCache.save(key, conversationId, pageMessages)
@@ -320,13 +378,14 @@ class PonteApi(private val session: SecureSession, private val settings: ServerC
 
     suspend fun olderMessages(conversationId: String, beforeId: String): MessagePage =
         withContext(Dispatchers.IO) {
-            val key = messageCacheKey()
+            var key = messageCacheKey()
             val cached = messageCache.before(key, conversationId, beforeId)
             if (cached.messages.isNotEmpty()) return@withContext MessagePage(cached.messages, cached.hasMore)
             try {
                 val path = messagesPath(conversationId) + "?limit=${LocalMessageCache.PAGE_SIZE}&before_id=" +
                     URLEncoder.encode(beforeId, "UTF-8")
                 val result = request(path)
+                key = stableMessageCacheKey()
                 val raw = parseMessages(result.optJSONArray("data") ?: JSONArray())
                 val before = beforeId.toLongOrNull() ?: Long.MAX_VALUE
                 val older = raw.filter { (it.id.toLongOrNull() ?: Long.MAX_VALUE) < before }
@@ -353,7 +412,7 @@ class PonteApi(private val session: SecureSession, private val settings: ServerC
         statusIds: List<String>,
         pendingIds: Set<String>
     ): MessageSync = withContext(Dispatchers.IO) {
-        val key = messageCacheKey()
+        var key = messageCacheKey()
         val after = afterId.toLongOrNull() ?: 0L
         val storedPending = messageCache.pending(key, conversationId)
         val allPendingIds = pendingIds + storedPending.map { it.serverMessageId }.filter { it.isNotBlank() }
@@ -365,6 +424,7 @@ class PonteApi(private val session: SecureSession, private val settings: ServerC
             if (ids.isNotEmpty()) append("&ids=").append(ids.joinToString(","))
         }
         val result = request(messagesPath(conversationId) + query)
+        key = stableMessageCacheKey()
         val all = parseMessages(result.optJSONArray("data") ?: JSONArray())
         val include = ids.map { it.toString() }.toSet()
         val changed = all.filter {

@@ -9,7 +9,7 @@ data class CachedMessagePage(val messages: List<ChatMessage>, val hasMore: Boole
 
 /** Stores only messages that have actually been loaded by the operator. */
 class LocalMessageCache(context: Context) : SQLiteOpenHelper(
-    context.applicationContext, "zapapi_messages.db", null, 2
+    context.applicationContext, "zapapi_messages.db", null, 3
 ) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
@@ -34,6 +34,7 @@ class LocalMessageCache(context: Context) : SQLiteOpenHelper(
             "CREATE INDEX messages_page_idx ON messages(account_key, conversation_id, message_id)"
         )
         createConversationState(db)
+        createConversationList(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -41,6 +42,7 @@ class LocalMessageCache(context: Context) : SQLiteOpenHelper(
             createConversationState(db)
             migrateCachedMedia(db)
         }
+        if (oldVersion < 3) createConversationList(db)
     }
 
     private fun createConversationState(db: SQLiteDatabase) {
@@ -52,6 +54,90 @@ class LocalMessageCache(context: Context) : SQLiteOpenHelper(
                 PRIMARY KEY(account_key, conversation_id)
             )""".trimIndent()
         )
+    }
+
+    private fun createConversationList(db: SQLiteDatabase) {
+        db.execSQL(
+            """CREATE TABLE IF NOT EXISTS cached_conversations (
+                account_key TEXT NOT NULL,
+                conversation_id TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                phone TEXT NOT NULL,
+                preview TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                unread INTEGER NOT NULL,
+                window_open INTEGER NOT NULL,
+                has_photo INTEGER NOT NULL,
+                photo_version TEXT NOT NULL,
+                read_through_id INTEGER NOT NULL,
+                PRIMARY KEY(account_key, conversation_id)
+            )""".trimIndent()
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS cached_conversations_order_idx ON cached_conversations(account_key, position)")
+    }
+
+    @Synchronized
+    fun conversations(accountKey: String): List<ChatSummary> {
+        val result = mutableListOf<ChatSummary>()
+        readableDatabase.query(
+            "cached_conversations",
+            arrayOf("conversation_id", "name", "phone", "preview", "updated_at", "unread", "window_open", "has_photo", "photo_version", "read_through_id"),
+            "account_key=?", arrayOf(accountKey), null, null, "position ASC"
+        ).use { cursor ->
+            while (cursor.moveToNext()) result += ChatSummary(
+                id = cursor.getString(0), name = cursor.getString(1), phone = cursor.getString(2),
+                preview = cursor.getString(3), time = cursor.getString(4), unread = cursor.getInt(5),
+                windowOpen = cursor.getInt(6) != 0, hasPhoto = cursor.getInt(7) != 0,
+                photoVersion = cursor.getString(8), readThroughId = cursor.getLong(9)
+            )
+        }
+        return result
+    }
+
+    @Synchronized
+    fun saveConversations(accountKey: String, conversations: List<ChatSummary>) {
+        if (this.conversations(accountKey) == conversations) return
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            db.delete("cached_conversations", "account_key=?", arrayOf(accountKey))
+            conversations.forEachIndexed { index, chat ->
+                db.insertWithOnConflict("cached_conversations", null, ContentValues().apply {
+                    put("account_key", accountKey)
+                    put("conversation_id", chat.id)
+                    put("position", index)
+                    put("name", chat.name)
+                    put("phone", chat.phone)
+                    put("preview", chat.preview)
+                    put("updated_at", chat.time)
+                    put("unread", chat.unread)
+                    put("window_open", if (chat.windowOpen) 1 else 0)
+                    put("has_photo", if (chat.hasPhoto) 1 else 0)
+                    put("photo_version", chat.photoVersion)
+                    put("read_through_id", chat.readThroughId)
+                }, SQLiteDatabase.CONFLICT_REPLACE)
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    @Synchronized
+    fun rekeyAccount(oldKey: String, newKey: String) {
+        if (oldKey == newKey) return
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            listOf("messages", "conversation_state", "cached_conversations").forEach { table ->
+                db.execSQL("UPDATE OR IGNORE $table SET account_key=? WHERE account_key=?", arrayOf(newKey, oldKey))
+                db.delete(table, "account_key=?", arrayOf(oldKey))
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
     }
 
     private fun migrateCachedMedia(db: SQLiteDatabase) {
@@ -223,6 +309,7 @@ class LocalMessageCache(context: Context) : SQLiteOpenHelper(
     fun clearAll() {
         writableDatabase.delete("messages", null, null)
         writableDatabase.delete("conversation_state", null, null)
+        writableDatabase.delete("cached_conversations", null, null)
     }
 
     companion object {

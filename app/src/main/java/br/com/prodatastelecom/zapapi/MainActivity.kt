@@ -129,8 +129,7 @@ class MainActivity : ComponentActivity() {
                     } else if (activeChat != null) {
                         val chat = activeChat!!
                         ChatScreen(chat, api, activityLifecycle, onBack = { activeChat = null }, onUnauthorized = {
-                            api.clearMessageCache()
-                            session.clear()
+                            session.clearToken()
                             isLoggedIn = false
                             activeChat = null
                         })
@@ -145,8 +144,7 @@ class MainActivity : ComponentActivity() {
                                     isLoggedIn = false
                                 }
                             }, onUnauthorized = {
-                                api.clearMessageCache()
-                                session.clear()
+                                session.clearToken()
                                 isLoggedIn = false
                             })
                     }
@@ -157,12 +155,19 @@ class MainActivity : ComponentActivity() {
                         api = api,
                         onDismiss = { showSettings = false },
                         onSave = { newConfig ->
-                            configs.save(newConfig)
-                            api.clearMessageCache()
-                            // Invalidar sessão anterior: nunca reutilizar token de outro servidor/tenant.
-                            session.clear()
-                            isLoggedIn = false
-                            activeChat = null
+                            val oldConfig = configs.load().normalized()
+                            val savedConfig = newConfig.normalized()
+                            val identityChanged = oldConfig.baseUrl != savedConfig.baseUrl ||
+                                oldConfig.apiPrefix != savedConfig.apiPrefix ||
+                                oldConfig.workspace != savedConfig.workspace
+                            configs.save(savedConfig)
+                            if (identityChanged) {
+                                // Never reuse a session/cache across a different server or tenant.
+                                api.clearMessageCache()
+                                session.clear()
+                                isLoggedIn = false
+                                activeChat = null
+                            }
                             refreshKey++
                             showSettings = false
                         }
@@ -221,9 +226,8 @@ private fun LoginScreen(api: PonteApi, session: SecureSession, onLogin: () -> Un
             error = null
             scope.launch {
                 try {
-                    val token = api.login(email.trim(), password, mfaCode)
-                    api.clearMessageCache()
-                    session.save(token)
+                    val authenticated = api.login(email.trim(), password, mfaCode)
+                    session.save(authenticated.accessToken, authenticated.cacheScope)
                     onLogin()
                 } catch (e: Exception) { error = e.message ?: "Não foi possível conectar." }
                 finally { busy = false }
@@ -263,12 +267,19 @@ private fun HomeScreen(api: PonteApi, refreshKey: Int, lifecycle: Lifecycle, onC
     var menu by remember { mutableStateOf(false) }
     var tab by remember { mutableIntStateOf(0) }
     LaunchedEffect(refreshKey, lifecycle) {
+        try {
+            val cachedChats = api.cachedConversations()
+            if (chats.isEmpty() && cachedChats.isNotEmpty()) {
+                chats = cachedChats
+                loading = false
+            }
+        } catch (_: Exception) { }
         lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
             while (isActive) {
                 try {
                     val refreshedChats = api.conversations()
                     PonteMessagingService.reconcileReadCursors(context, refreshedChats)
-                    chats = refreshedChats
+                    if (refreshedChats != chats) chats = refreshedChats
                     error = null
                 } catch (e: ApiException) {
                     if (e.httpStatus == 401) { onUnauthorized(); return@repeatOnLifecycle }
@@ -500,6 +511,7 @@ private fun ChatScreen(chat: ChatSummary, api: PonteApi, lifecycle: Lifecycle,
         if (changed.isEmpty()) return
         val pendingByServerId = pendingServerIds.entries.associate { it.value to it.key }
         val merged = messages.toMutableList()
+        var stateChanged = false
         var addedNew = false
         changed.forEach { remote ->
             val pendingLocalId = pendingByServerId[remote.id]
@@ -507,11 +519,21 @@ private fun ChatScreen(chat: ChatSummary, api: PonteApi, lifecycle: Lifecycle,
                 if (remote.status.equals("accepted", ignoreCase = true)) return@forEach
                 merged.removeAll { it.id == pendingLocalId }
                 pendingServerIds = pendingServerIds - pendingLocalId
+                stateChanged = true
             }
             val existingIndex = merged.indexOfFirst { it.id == remote.id }
-            if (existingIndex >= 0) merged[existingIndex] = remote
-            else { merged += remote; addedNew = true }
+            if (existingIndex >= 0) {
+                if (merged[existingIndex] != remote) {
+                    merged[existingIndex] = remote
+                    stateChanged = true
+                }
+            } else {
+                merged += remote
+                addedNew = true
+                stateChanged = true
+            }
         }
+        if (!stateChanged) return
         messages = merged.distinctBy { it.id }
             .sortedBy { it.id.toLongOrNull() ?: Long.MAX_VALUE }
         if (atBottom && addedNew) scrollToLatest(messages.size)
@@ -675,7 +697,9 @@ private fun ChatScreen(chat: ChatSummary, api: PonteApi, lifecycle: Lifecycle,
             LazyColumn(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 12.dp), state = listState,
                 contentPadding = PaddingValues(vertical = 14.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(messages, key = { it.id }) { message ->
+                items(messages, key = { it.id }, contentType = {
+                    when { it.isPending -> "pending"; it.hasMedia -> "media"; else -> "text" }
+                }) { message ->
                     ChatMessageBubble(message, api, onUnauthorized)
                 }
             }
@@ -850,6 +874,30 @@ private fun ChatMessageBubble(message: ChatMessage, api: PonteApi, onUnauthorize
                 CircularProgressIndicator(Modifier.size(17.dp), strokeWidth = 2.dp, color = Green)
                 Text("Carregando mensagem…", color = Ink, fontSize = 13.sp)
                 Text(message.time.takeLast(5), color = Color.Gray, fontSize = 10.sp)
+            }
+        }
+        return
+    }
+    if (!message.hasMedia) {
+        Row(Modifier.fillMaxWidth(),
+            horizontalArrangement = if (outbound) Arrangement.End else Arrangement.Start) {
+            Column(Modifier.widthIn(max = 305.dp)
+                .clip(RoundedCornerShape(14.dp))
+                .background(if (outbound) LightGreen else Color.White)
+                .padding(horizontal = 12.dp, vertical = 8.dp)) {
+                Text(message.text.trim().ifBlank { "[Mensagem sem texto]" }, color = Ink, fontSize = 15.sp)
+                Row(verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
+                    Text(message.time.takeLast(5), color = Color.Gray, fontSize = 10.sp)
+                    if (outbound) {
+                        Spacer(Modifier.width(5.dp))
+                        Text(when (message.status) {
+                            "read" -> "✓✓"
+                            "delivered" -> "✓✓"
+                            else -> "✓"
+                        }, color = if (message.status == "read") Green else Color.Gray, fontSize = 12.sp)
+                    }
+                }
             }
         }
         return
