@@ -31,7 +31,8 @@ data class ChatSummary(
     val unread: Int,
     val windowOpen: Boolean = true,
     val hasPhoto: Boolean = false,
-    val photoVersion: String = ""
+    val photoVersion: String = "",
+    val readThroughId: Long = 0L
 )
 data class ChatMessage(
     val id: String,
@@ -215,7 +216,8 @@ class PonteApi(private val session: SecureSession, private val settings: ServerC
             ChatSummary(row.optString("id"), row.optString("name").ifBlank { row.optString("phone") },
                 row.optString("phone"), row.optString("last_message"), row.optString("updated_at"),
                 row.optInt("unread_count"), row.optBoolean("window_open", true),
-                row.optBoolean("has_photo"), row.optString("photo_version"))
+                row.optBoolean("has_photo"), row.optString("photo_version"),
+                row.optLong("read_through_id", 0L))
         }.filter { it.id.isNotBlank() }
     }
 
@@ -251,6 +253,14 @@ class PonteApi(private val session: SecureSession, private val settings: ServerC
     private fun messagesPath(conversationId: String): String {
         val id = URLEncoder.encode(conversationId, "UTF-8")
         return settings.load().messagesPath.replace("{id}", id)
+    }
+
+    suspend fun markConversationRead(conversationId: String): Long {
+        val path = messagesPath(conversationId).trimEnd('/')
+        if (!path.endsWith("/messages"))
+            throw ApiException(400, "A rota de mensagens deve terminar em /messages para sincronizar a leitura.")
+        return request(path.removeSuffix("/messages") + "/read", "POST", JSONObject())
+            .optLong("read_through_id", 0L)
     }
 
     private fun firstNonBlank(row: JSONObject, vararg keys: String): String =

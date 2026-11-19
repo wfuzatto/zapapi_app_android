@@ -45,6 +45,8 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -249,6 +251,7 @@ private fun HomeScreen(api: PonteApi, refreshKey: Int, lifecycle: Lifecycle, onC
                        onRefresh: () -> Unit, onSettings: () -> Unit,
                        onLogout: () -> Unit, onUnauthorized: () -> Unit) {
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
     var chats by remember { mutableStateOf<List<ChatSummary>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -263,7 +266,9 @@ private fun HomeScreen(api: PonteApi, refreshKey: Int, lifecycle: Lifecycle, onC
         lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
             while (isActive) {
                 try {
-                    chats = api.conversations()
+                    val refreshedChats = api.conversations()
+                    PonteMessagingService.reconcileReadCursors(context, refreshedChats)
+                    chats = refreshedChats
                     error = null
                 } catch (e: ApiException) {
                     if (e.httpStatus == 401) { onUnauthorized(); return@repeatOnLifecycle }
@@ -408,7 +413,9 @@ private fun HomeScreen(api: PonteApi, refreshKey: Int, lifecycle: Lifecycle, onC
 
 @Composable
 private fun Avatar(name: String, chat: ChatSummary, api: PonteApi) {
+    var photoLoadFailed by remember(chat.id, chat.photoVersion) { mutableStateOf(false) }
     val photo by produceState<ImageBitmap?>(initialValue = null, chat.id, chat.photoVersion, chat.hasPhoto) {
+        photoLoadFailed = false
         if (chat.hasPhoto) {
             value = try {
                 val file = api.downloadContactPhoto(chat.id, chat.photoVersion)
@@ -422,11 +429,21 @@ private fun Avatar(name: String, chat: ChatSummary, api: PonteApi) {
                             inSampleSize = sample
                         })?.asImageBitmap()
                     }
-                }
-            } catch (_: Exception) { null }
+                } ?: run { photoLoadFailed = true; null }
+            } catch (_: Exception) {
+                photoLoadFailed = true
+                null
+            }
         }
     }
-    Box(Modifier.size(49.dp).clip(CircleShape).background(Color(0xFFE4F1EA)), contentAlignment = Alignment.Center) {
+    val photoDescription = when {
+        photo != null -> "Foto de $name"
+        !chat.hasPhoto -> "Nenhuma foto cadastrada para $name"
+        photoLoadFailed -> "Não foi possível carregar a foto de $name"
+        else -> "Carregando foto de $name"
+    }
+    Box(Modifier.size(49.dp).clip(CircleShape).background(Color(0xFFE4F1EA))
+        .semantics { contentDescription = photoDescription }, contentAlignment = Alignment.Center) {
         Text(name.take(1).uppercase(), fontWeight = FontWeight.Bold, fontSize = 21.sp, color = Green)
         if (photo != null) Image(photo!!, contentDescription = "Foto de ${chat.name}",
             contentScale = ContentScale.Crop, modifier = Modifier.matchParentSize())
@@ -443,6 +460,7 @@ private fun templateDisplayTitle(name: String): String = name.replace(Regex("[_-
 private fun ChatScreen(chat: ChatSummary, api: PonteApi, lifecycle: Lifecycle,
                        onBack: () -> Unit, onUnauthorized: () -> Unit) {
     BackHandler(onBack = onBack)
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var messages by remember(chat.id) { mutableStateOf<List<ChatMessage>>(emptyList()) }
     var pendingServerIds by remember(chat.id) { mutableStateOf<Map<String, String>>(emptyMap()) }
@@ -456,6 +474,19 @@ private fun ChatScreen(chat: ChatSummary, api: PonteApi, lifecycle: Lifecycle,
     var showTemplate by remember(chat.id) { mutableStateOf(false) }
     var showInfo by remember(chat.id) { mutableStateOf(false) }
     val listState = rememberLazyListState()
+    val latestInboundMessageId = messages.asSequence()
+        .filter { it.direction == "inbound" }
+        .mapNotNull { it.id.toLongOrNull() }
+        .maxOrNull() ?: 0L
+
+    LaunchedEffect(chat.id, latestInboundMessageId) {
+        if (latestInboundMessageId <= 0L) return@LaunchedEffect
+        PonteMessagingService.applyReadThrough(context, chat.id, latestInboundMessageId)
+        try {
+            val serverCursor = api.markConversationRead(chat.id)
+            PonteMessagingService.applyReadThrough(context, chat.id, serverCursor)
+        } catch (_: Exception) { /* a lista reconcilia o cursor quando a API voltar */ }
+    }
 
     suspend fun scrollToLatest(itemCount: Int) {
         if (itemCount <= 0) return
