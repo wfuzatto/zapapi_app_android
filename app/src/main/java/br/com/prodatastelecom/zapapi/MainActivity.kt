@@ -394,7 +394,7 @@ private fun HomeScreen(api: PonteApi, refreshKey: Int, lifecycle: Lifecycle, onC
                         try {
                             val id = api.createConversation(newPhone)
                             newChat = false
-                            onChat(ChatSummary(id, newPhone, newPhone, "", "", 0))
+                            onChat(ChatSummary(id, newPhone, newPhone, "", "", 0, windowOpen = false))
                         } catch (e: Exception) { error = e.message }
                         finally { creating = false }
                     }
@@ -425,6 +425,7 @@ private fun ChatScreen(chat: ChatSummary, api: PonteApi, lifecycle: Lifecycle,
     var sending by remember(chat.id) { mutableStateOf(false) }
     var loadingOlder by remember(chat.id) { mutableStateOf(false) }
     var hasMoreOlder by remember(chat.id) { mutableStateOf(false) }
+    var windowOpen by remember(chat.id) { mutableStateOf(chat.windowOpen) }
     var initialScrollDone by remember(chat.id) { mutableStateOf(false) }
     var showTemplate by remember(chat.id) { mutableStateOf(false) }
     var showInfo by remember(chat.id) { mutableStateOf(false) }
@@ -478,6 +479,7 @@ private fun ChatScreen(chat: ChatSummary, api: PonteApi, lifecycle: Lifecycle,
                         messages = (page.messages + pending).distinctBy { it.id }
                             .sortedBy { it.id.toLongOrNull() ?: Long.MAX_VALUE }
                         hasMoreOlder = page.hasMore
+                        page.windowOpen?.let { windowOpen = it }
                         if (messages.isNotEmpty()) listState.scrollToItem(messages.lastIndex)
                         initialScrollDone = true
                     } else {
@@ -488,10 +490,11 @@ private fun ChatScreen(chat: ChatSummary, api: PonteApi, lifecycle: Lifecycle,
                             .takeLast(50).map { it.id }
                         val atBottom = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index
                             ?.let { it >= messages.lastIndex - 1 } ?: true
-                        val changed = api.syncMessages(
+                        val sync = api.syncMessages(
                             chat.id, afterId, statusIds, pendingServerIds.values.toSet()
                         )
-                        mergeChangedMessages(changed, atBottom)
+                        sync.windowOpen?.let { windowOpen = it }
+                        mergeChangedMessages(sync.messages, atBottom)
                     }
                     firstFetch = false
                     error = null
@@ -504,8 +507,10 @@ private fun ChatScreen(chat: ChatSummary, api: PonteApi, lifecycle: Lifecycle,
         }
     }
     LaunchedEffect(listState, chat.id) {
-        snapshotFlow { listState.firstVisibleItemIndex }.distinctUntilChanged().collect { firstVisible ->
-            if (initialScrollDone && firstVisible <= 2 && hasMoreOlder && !loadingOlder) {
+        snapshotFlow {
+            Triple(initialScrollDone, listState.firstVisibleItemIndex, listState.isScrollInProgress)
+        }.distinctUntilChanged().collect { (ready, firstVisible, scrolling) ->
+            if (ready && scrolling && firstVisible <= 2 && hasMoreOlder && !loadingOlder) {
                 val cursor = messages.firstOrNull { !it.isPending }?.id ?: return@collect
                 val oldIndex = listState.firstVisibleItemIndex
                 val oldOffset = listState.firstVisibleItemScrollOffset
@@ -517,6 +522,7 @@ private fun ChatScreen(chat: ChatSummary, api: PonteApi, lifecycle: Lifecycle,
                         messages = (additions + messages).distinctBy { it.id }
                             .sortedBy { it.id.toLongOrNull() ?: Long.MAX_VALUE }
                         hasMoreOlder = page.hasMore
+                        page.windowOpen?.let { windowOpen = it }
                         listState.scrollToItem(oldIndex + additions.size, oldOffset)
                     } else {
                         hasMoreOlder = false
@@ -555,39 +561,48 @@ private fun ChatScreen(chat: ChatSummary, api: PonteApi, lifecycle: Lifecycle,
                 Text(error!!, color = MaterialTheme.colorScheme.error, fontSize = 12.sp,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 5.dp))
             }
-            Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.Bottom) {
-                OutlinedTextField(value = input, onValueChange = { input = it }, modifier = Modifier.weight(1f),
-                    placeholder = { Text("Mensagem") }, shape = RoundedCornerShape(24.dp), maxLines = 4,
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedContainerColor = Color.White, unfocusedContainerColor = Color.White))
-                Spacer(Modifier.width(8.dp))
-                FilledIconButton(enabled = !sending && input.isNotBlank(), onClick = {
-                    val text = input.trim()
-                    sending = true
-                    val pendingId = "pending-${UUID.randomUUID()}"
-                    val pending = ChatMessage(
-                        id = pendingId, text = text, direction = "outbound",
-                        time = LocalTime.now().toString().take(5), status = "pending", isPending = true
-                    )
-                    messages = messages + pending
-                    scope.launch { if (messages.isNotEmpty()) listState.animateScrollToItem(messages.lastIndex) }
-                    scope.launch {
-                        try {
-                            api.cachePendingMessage(chat.id, pending)
-                            val receipt = api.send(chat.id, text)
-                            api.attachPendingMessageId(chat.id, pendingId, receipt.id)
-                            pendingServerIds = pendingServerIds + (pendingId to receipt.id)
-                            input = ""
-                            error = null
-                        } catch (e: Exception) {
-                            try { api.removePendingMessage(chat.id, pendingId) } catch (_: Exception) { }
-                            messages = messages.filterNot { it.id == pendingId }
-                            error = e.message
+            if (!windowOpen) {
+                Button(onClick = { showTemplate = true }, enabled = !sending,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp)) {
+                    Icon(Icons.Default.Description, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Enviar template para iniciar conversa")
+                }
+            } else {
+                Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.Bottom) {
+                    OutlinedTextField(value = input, onValueChange = { input = it }, modifier = Modifier.weight(1f),
+                        placeholder = { Text("Mensagem") }, shape = RoundedCornerShape(24.dp), maxLines = 4,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedContainerColor = Color.White, unfocusedContainerColor = Color.White))
+                    Spacer(Modifier.width(8.dp))
+                    FilledIconButton(enabled = !sending && input.isNotBlank(), onClick = {
+                        val text = input.trim()
+                        sending = true
+                        val pendingId = "pending-${UUID.randomUUID()}"
+                        val pending = ChatMessage(
+                            id = pendingId, text = text, direction = "outbound",
+                            time = LocalTime.now().toString().take(5), status = "pending", isPending = true
+                        )
+                        messages = messages + pending
+                        scope.launch { if (messages.isNotEmpty()) listState.animateScrollToItem(messages.lastIndex) }
+                        scope.launch {
+                            try {
+                                api.cachePendingMessage(chat.id, pending)
+                                val receipt = api.send(chat.id, text)
+                                api.attachPendingMessageId(chat.id, pendingId, receipt.id)
+                                pendingServerIds = pendingServerIds + (pendingId to receipt.id)
+                                input = ""
+                                error = null
+                            } catch (e: Exception) {
+                                try { api.removePendingMessage(chat.id, pendingId) } catch (_: Exception) { }
+                                messages = messages.filterNot { it.id == pendingId }
+                                error = e.message
+                            }
+                            finally { sending = false }
                         }
-                        finally { sending = false }
+                    }, colors = IconButtonDefaults.filledIconButtonColors(containerColor = Green)) {
+                        Icon(Icons.AutoMirrored.Filled.Send, "Enviar")
                     }
-                }, colors = IconButtonDefaults.filledIconButtonColors(containerColor = Green)) {
-                    Icon(Icons.AutoMirrored.Filled.Send, "Enviar")
                 }
             }
         }
@@ -603,8 +618,160 @@ private fun ChatScreen(chat: ChatSummary, api: PonteApi, lifecycle: Lifecycle,
             }
         }
     }
-    if(showTemplate) ZapTemplateDialog(onDismiss={showTemplate=false})
+    if(showTemplate) ZapTemplateDialog(api, chat, onDismiss={showTemplate=false}, onSend={template, bodyParameters, headerParameters ->
+        val pendingId = "pending-${UUID.randomUUID()}"
+        val pending = ChatMessage(
+            id = pendingId, text = "[Template] ${template.name}", direction = "outbound",
+            time = LocalTime.now().toString().take(5), status = "pending", type = "template", isPending = true
+        )
+        messages = messages + pending
+        sending = true
+        try {
+            api.cachePendingMessage(chat.id, pending)
+            val receipt = api.sendTemplate(chat.id, template, bodyParameters, headerParameters)
+            api.attachPendingMessageId(chat.id, pendingId, receipt.id)
+            pendingServerIds = pendingServerIds + (pendingId to receipt.id)
+            error = null
+            scope.launch { if (messages.isNotEmpty()) listState.animateScrollToItem(messages.lastIndex) }
+        } catch (e: Exception) {
+            try { api.removePendingMessage(chat.id, pendingId) } catch (_: Exception) { }
+            messages = messages.filterNot { it.id == pendingId }
+            error = e.message
+            throw e
+        } finally { sending = false }
+    })
     if(showInfo) ZapContactInfo(chat,onDismiss={showInfo=false})
+}
+
+@Composable
+private fun ZapTemplateDialog(
+    api: PonteApi,
+    chat: ChatSummary,
+    onDismiss: () -> Unit,
+    onSend: suspend (MessageTemplate, List<String>, List<String>) -> Unit
+) {
+    val scope = rememberCoroutineScope()
+    var templates by remember(chat.id) { mutableStateOf<List<MessageTemplate>>(emptyList()) }
+    var loading by remember(chat.id) { mutableStateOf(true) }
+    var loadingError by remember(chat.id) { mutableStateOf<String?>(null) }
+    var sendError by remember(chat.id) { mutableStateOf<String?>(null) }
+    var retryKey by remember(chat.id) { mutableIntStateOf(0) }
+    var selected by remember(chat.id) { mutableStateOf<MessageTemplate?>(null) }
+    var bodyValues by remember(selected) { mutableStateOf(List(selected?.variables ?: 0) { "" }) }
+    var headerValues by remember(selected) { mutableStateOf(List(selected?.headerVariables ?: 0) { "" }) }
+    var sending by remember(chat.id) { mutableStateOf(false) }
+
+    LaunchedEffect(chat.id, retryKey) {
+        loading = true
+        loadingError = null
+        try { templates = api.templates(chat.id) }
+        catch (e: Exception) { loadingError = e.message ?: "Não foi possível carregar os templates." }
+        finally { loading = false }
+    }
+
+    val current = selected
+    val parametersComplete = current != null &&
+        bodyValues.size == current.variables && headerValues.size == current.headerVariables &&
+        bodyValues.all { it.isNotBlank() } && headerValues.all { it.isNotBlank() }
+    AlertDialog(
+        onDismissRequest = { if (!sending) onDismiss() },
+        title = { Text(if (current == null) "Templates aprovados" else "Enviar ${current.name}") },
+        text = {
+            Column(
+                Modifier.fillMaxWidth().heightIn(max = 460.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(9.dp)
+            ) {
+                if (loading) {
+                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                    Text("Carregando templates aprovados…", color = Color.Gray)
+                }
+                if (loadingError != null) {
+                    Text(loadingError.orEmpty(), color = MaterialTheme.colorScheme.error)
+                    TextButton(onClick = { retryKey++ }) { Text("Tentar novamente") }
+                }
+                if (!loading && loadingError == null && current == null) {
+                    if (templates.isEmpty()) {
+                        Text("Nenhum template aprovado compatível com envio de texto foi encontrado para este número.",
+                            color = Color.Gray)
+                    }
+                    templates.forEach { template ->
+                        OutlinedButton(
+                            onClick = {
+                                selected = template
+                                sendError = null
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            contentPadding = PaddingValues(12.dp)
+                        ) {
+                            Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.Start) {
+                                Text(template.name, fontWeight = FontWeight.SemiBold, color = Ink)
+                                Text("${template.language} • ${template.category.ifBlank { "Aprovado" }}",
+                                    color = Color.Gray, fontSize = 11.sp)
+                                if (template.body.isNotBlank())
+                                    Text(template.body, color = Ink, fontSize = 12.sp, maxLines = 3,
+                                        overflow = TextOverflow.Ellipsis)
+                            }
+                        }
+                    }
+                }
+                if (current != null) {
+                    TextButton(onClick = { selected = null; sendError = null }, enabled = !sending) {
+                        Text("‹ Escolher outro template")
+                    }
+                    if (current.header.isNotBlank()) {
+                        Text("Cabeçalho", fontWeight = FontWeight.SemiBold)
+                        Text(current.header, color = Color.Gray, fontSize = 12.sp)
+                    }
+                    repeat(current.headerVariables) { index ->
+                        OutlinedTextField(
+                            value = headerValues.getOrElse(index) { "" },
+                            onValueChange = { value -> headerValues = headerValues.toMutableList().also { it[index] = value } },
+                            modifier = Modifier.fillMaxWidth(), singleLine = true,
+                            label = { Text("Parâmetro ${index + 1} do cabeçalho") }
+                        )
+                    }
+                    if (current.body.isNotBlank()) {
+                        Text("Mensagem", fontWeight = FontWeight.SemiBold)
+                        Text(current.body, color = Color.Gray, fontSize = 12.sp)
+                    }
+                    repeat(current.variables) { index ->
+                        OutlinedTextField(
+                            value = bodyValues.getOrElse(index) { "" },
+                            onValueChange = { value -> bodyValues = bodyValues.toMutableList().also { it[index] = value } },
+                            modifier = Modifier.fillMaxWidth(), singleLine = true,
+                            label = { Text("Parâmetro ${index + 1} da mensagem") }
+                        )
+                    }
+                    Text("O contato precisa ter consentido em receber mensagens.", color = Color.Gray, fontSize = 11.sp)
+                }
+                if (sendError != null)
+                    Text(sendError.orEmpty(), color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+            }
+        },
+        confirmButton = {
+            if (current != null) Button(
+                enabled = !sending && parametersComplete,
+                onClick = {
+                    scope.launch {
+                        sending = true
+                        sendError = null
+                        try {
+                            onSend(current, bodyValues, headerValues)
+                            onDismiss()
+                        } catch (e: Exception) {
+                            sendError = e.message ?: "Não foi possível enviar o template."
+                        } finally { sending = false }
+                    }
+                }
+            ) {
+                if (sending) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = Color.White)
+                else Text("Enviar template")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, enabled = !sending) { Text("Fechar") }
+        }
+    )
 }
 
 @Composable

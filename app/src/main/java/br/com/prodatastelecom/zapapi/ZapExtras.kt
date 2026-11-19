@@ -66,8 +66,8 @@ fun ZapExtras(tab:Int,api:PonteApi,onChat:(ChatSummary)->Unit,onSettings:()->Uni
                 Text("Templates oficiais",fontSize=22.sp,fontWeight=FontWeight.Bold,color=ZapInk)
                 Text("Modelos aprovados pela Meta",color=Color.Gray,fontSize=12.sp)
                 Spacer(Modifier.height(14.dp))
-                EmptyZap("Use o painel web para templates",
-                    "A API móvel envia texto na janela de atendimento; o app ainda não oferece envio de templates.")
+                EmptyZap("Templates disponíveis na conversa",
+                    "Abra a conversa do contato e toque no ícone de documento. Fora da janela de 24 horas, o app mostra o botão para enviar um template aprovado.")
             }
             else -> {
                 Text("Configurações",fontSize=22.sp,fontWeight=FontWeight.Bold,color=ZapInk)
@@ -116,16 +116,6 @@ private fun EmptyZap(title:String,subtitle:String) {
         Text(title,fontWeight=FontWeight.SemiBold,color=ZapInk)
         Text(subtitle,color=Color.Gray,fontSize=12.sp)
     }
-}
-
-@Composable
-fun ZapTemplateDialog(onDismiss:()->Unit) {
-    AlertDialog(
-        onDismissRequest=onDismiss,
-        title={Text("Templates oficiais")},
-        text={Text("O app móvel ainda não oferece envio de templates. Use o painel web para iniciar conversas com um template aprovado.")},
-        confirmButton={TextButton(onClick=onDismiss){Text("Entendi")}}
-    )
 }
 
 @Composable

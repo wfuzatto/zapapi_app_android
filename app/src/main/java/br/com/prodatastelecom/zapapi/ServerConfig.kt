@@ -10,6 +10,8 @@ data class ServerConfig(
     val conversationsPath: String = "conversations",
     val messagesPath: String = "conversations/{id}/messages",
     val sendPath: String = "conversations/{id}/messages",
+    val templatesPath: String = "templates",
+    val templateSendPath: String = "conversations/{id}/templates",
     val createPath: String = "conversations",
     val contactsPath: String = "contacts",
     val mediaPath: String = "media/{id}",
@@ -28,6 +30,7 @@ data class ServerConfig(
         if (uri.host.isNullOrBlank() || uri.userInfo != null || uri.query != null || uri.fragment != null)
             return "Informe uma URL HTTPS sem usuário, parâmetros ou fragmento."
         val paths = listOf(apiPrefix, loginPath, conversationsPath, messagesPath, sendPath,
+            templatesPath, templateSendPath,
             createPath, contactsPath, mediaPath, pushPath, logoutPath)
         if (paths.any { it.isBlank() || it.startsWith("/") || it.contains("..") ||
                     it.contains("?") || it.contains("#") || it.contains("\\") ||
@@ -35,6 +38,8 @@ data class ServerConfig(
             return "Os endpoints devem ser caminhos relativos, sem domínio ou parâmetros."
         if (messagesPath.contains("{id}").not() || sendPath.contains("{id}").not())
             return "As rotas de mensagens devem conter {id}."
+        if (templateSendPath.contains("{id}").not())
+            return "A rota de envio de template deve conter {id}."
         if (connectionTimeoutSeconds.toIntOrNull() !in 5..120 || readTimeoutSeconds.toIntOrNull() !in 5..120)
             return "Os timeouts devem estar entre 5 e 120 segundos."
         if (workspace.length > 64 || (workspace.isNotBlank() && !Regex("^[a-zA-Z0-9_-]+$").matches(workspace)))
@@ -58,6 +63,8 @@ data class ServerConfig(
             conversationsPath = conversationsPath.trim().trim('/'),
             messagesPath = messagesPath.trim().trim('/'),
             sendPath = sendPath.trim().trim('/'),
+            templatesPath = templatesPath.trim().trim('/'),
+            templateSendPath = templateSendPath.trim().trim('/'),
             createPath = createPath.trim().trim('/'),
             contactsPath = contactsPath.trim().trim('/'),
             mediaPath = mediaPath.trim().trim('/'),
@@ -94,6 +101,8 @@ class ServerConfigStore(context: Context) {
             conversationsPath = prefs.getString("conversationsPath", defaults.conversationsPath) ?: defaults.conversationsPath,
             messagesPath = prefs.getString("messagesPath", defaults.messagesPath) ?: defaults.messagesPath,
             sendPath = prefs.getString("sendPath", defaults.sendPath) ?: defaults.sendPath,
+            templatesPath = prefs.getString("templatesPath", defaults.templatesPath) ?: defaults.templatesPath,
+            templateSendPath = prefs.getString("templateSendPath", defaults.templateSendPath) ?: defaults.templateSendPath,
             createPath = prefs.getString("createPath", defaults.createPath) ?: defaults.createPath,
             contactsPath = prefs.getString("contactsPath", defaults.contactsPath) ?: defaults.contactsPath,
             mediaPath = prefs.getString("mediaPath", defaults.mediaPath) ?: defaults.mediaPath,
@@ -117,6 +126,8 @@ class ServerConfigStore(context: Context) {
             .putString("conversationsPath", safe.conversationsPath)
             .putString("messagesPath", safe.messagesPath)
             .putString("sendPath", safe.sendPath)
+            .putString("templatesPath", safe.templatesPath)
+            .putString("templateSendPath", safe.templateSendPath)
             .putString("createPath", safe.createPath)
             .putString("contactsPath", safe.contactsPath)
             .putString("mediaPath", safe.mediaPath)

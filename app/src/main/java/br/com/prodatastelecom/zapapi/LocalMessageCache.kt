@@ -226,7 +226,7 @@ class LocalMessageCache(context: Context) : SQLiteOpenHelper(
     }
 
     companion object {
-        const val PAGE_SIZE = 50
+        const val PAGE_SIZE = 10
         private val COLUMNS = arrayOf(
             "account_key", "conversation_id", "message_id", "text", "direction",
         "message_time", "status", "type", "has_media", "media_mime", "media_filename",

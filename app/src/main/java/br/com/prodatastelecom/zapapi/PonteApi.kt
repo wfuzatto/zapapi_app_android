@@ -28,7 +28,8 @@ data class ChatSummary(
     val phone: String,
     val preview: String,
     val time: String,
-    val unread: Int
+    val unread: Int,
+    val windowOpen: Boolean = true
 )
 data class ChatMessage(
     val id: String,
@@ -43,8 +44,22 @@ data class ChatMessage(
     val isPending: Boolean = false,
     val serverMessageId: String = ""
 )
-data class MessagePage(val messages: List<ChatMessage>, val hasMore: Boolean)
+data class MessagePage(
+    val messages: List<ChatMessage>,
+    val hasMore: Boolean,
+    val windowOpen: Boolean? = null
+)
+data class MessageSync(val messages: List<ChatMessage>, val windowOpen: Boolean?)
 data class MessageSendReceipt(val id: String, val status: String)
+data class MessageTemplate(
+    val name: String,
+    val language: String,
+    val category: String,
+    val header: String,
+    val body: String,
+    val headerVariables: Int,
+    val variables: Int
+)
 data class MediaAttachment(val file: File, val mimeType: String, val filename: String)
 class ApiException(val httpStatus: Int, message: String): Exception(message)
 
@@ -197,7 +212,7 @@ class PonteApi(private val session: SecureSession, private val settings: ServerC
             val row = items.optJSONObject(i) ?: return@mapNotNull null
             ChatSummary(row.optString("id"), row.optString("name").ifBlank { row.optString("phone") },
                 row.optString("phone"), row.optString("last_message"), row.optString("updated_at"),
-                row.optInt("unread_count"))
+                row.optInt("unread_count"), row.optBoolean("window_open", true))
         }.filter { it.id.isNotBlank() }
     }
 
@@ -278,16 +293,16 @@ class PonteApi(private val session: SecureSession, private val settings: ServerC
 
     suspend fun latestMessages(conversationId: String): MessagePage = withContext(Dispatchers.IO) {
         val key = messageCacheKey()
-        val result = request(messagesPath(conversationId) + "?limit=50")
+        val result = request(messagesPath(conversationId) + "?limit=${LocalMessageCache.PAGE_SIZE}")
         val raw = parseMessages(result.optJSONArray("data") ?: JSONArray())
-        val pageMessages = raw.takeLast(50)
+        val pageMessages = raw.takeLast(LocalMessageCache.PAGE_SIZE)
         messageCache.save(key, conversationId, pageMessages)
-        val serverHasMore = result.optBoolean("has_more", raw.size > 50)
+        val serverHasMore = result.optBoolean("has_more", raw.size > LocalMessageCache.PAGE_SIZE)
         messageCache.setHasMore(key, conversationId, serverHasMore)
         val page = messageCache.latest(key, conversationId)
         val pending = messageCache.pending(key, conversationId)
         MessagePage((page.messages + pending).sortedBy { it.id.toLongOrNull() ?: Long.MAX_VALUE },
-            serverHasMore || page.hasMore)
+            serverHasMore || page.hasMore, result.optBoolean("window_open", true))
     }
 
     suspend fun olderMessages(conversationId: String, beforeId: String): MessagePage =
@@ -296,7 +311,7 @@ class PonteApi(private val session: SecureSession, private val settings: ServerC
             val cached = messageCache.before(key, conversationId, beforeId)
             if (cached.messages.isNotEmpty()) return@withContext MessagePage(cached.messages, cached.hasMore)
             try {
-                val path = messagesPath(conversationId) + "?limit=50&before_id=" +
+                val path = messagesPath(conversationId) + "?limit=${LocalMessageCache.PAGE_SIZE}&before_id=" +
                     URLEncoder.encode(beforeId, "UTF-8")
                 val result = request(path)
                 val raw = parseMessages(result.optJSONArray("data") ?: JSONArray())
@@ -307,11 +322,11 @@ class PonteApi(private val session: SecureSession, private val settings: ServerC
                     messageCache.setHasMore(key, conversationId, false)
                     return@withContext MessagePage(emptyList(), false)
                 }
-                val pageMessages = older.takeLast(50)
+                val pageMessages = older.takeLast(LocalMessageCache.PAGE_SIZE)
                 messageCache.save(key, conversationId, pageMessages)
-                val serverHasMore = result.optBoolean("has_more", older.size > 50)
+                val serverHasMore = result.optBoolean("has_more", older.size > LocalMessageCache.PAGE_SIZE)
                 messageCache.setHasMore(key, conversationId, serverHasMore)
-                MessagePage(pageMessages, serverHasMore)
+                MessagePage(pageMessages, serverHasMore, result.optBoolean("window_open", true))
             } catch (e: Exception) {
                 if (cached.messages.isNotEmpty()) MessagePage(cached.messages, cached.hasMore)
                 else throw e
@@ -324,7 +339,7 @@ class PonteApi(private val session: SecureSession, private val settings: ServerC
         afterId: String,
         statusIds: List<String>,
         pendingIds: Set<String>
-    ): List<ChatMessage> = withContext(Dispatchers.IO) {
+    ): MessageSync = withContext(Dispatchers.IO) {
         val key = messageCacheKey()
         val after = afterId.toLongOrNull() ?: 0L
         val storedPending = messageCache.pending(key, conversationId)
@@ -351,7 +366,7 @@ class PonteApi(private val session: SecureSession, private val settings: ServerC
         messageCache.save(key, conversationId, changed.filterNot {
             it.id in allPendingIds && it.status.equals("accepted", ignoreCase = true)
         })
-        changed
+        MessageSync(changed, result.optBoolean("window_open", true))
     }
 
     /** Baixa mídia de uma mensagem pelo endpoint móvel autenticado e guarda no cache privado do app. */
@@ -451,6 +466,41 @@ class PonteApi(private val session: SecureSession, private val settings: ServerC
     suspend fun send(conversationId: String, text: String): MessageSendReceipt {
         val id = URLEncoder.encode(conversationId, "UTF-8")
         val result = request(settings.load().sendPath.replace("{id}", id), "POST", JSONObject().put("text", text))
+        return MessageSendReceipt(result.optString("id").takeIf { it.isNotBlank() }
+            ?: throw ApiException(502, "A API não retornou o ID da mensagem."), result.optString("status"))
+    }
+
+    suspend fun templates(conversationId: String): List<MessageTemplate> = withContext(Dispatchers.IO) {
+        val cfg = settings.load()
+        val accountId = conversationId.substringBefore('-').toLongOrNull()
+            ?: throw ApiException(400, "Conversa inválida para carregar templates.")
+        val path = cfg.templatesPath + "?account_id=" + accountId
+        val rows = request(path).optJSONArray("data") ?: JSONArray()
+        (0 until rows.length()).mapNotNull { index ->
+            val row = rows.optJSONObject(index) ?: return@mapNotNull null
+            val languageValue = row.opt("language")
+            val language = when (languageValue) {
+                is JSONObject -> languageValue.optString("code")
+                else -> languageValue?.toString().orEmpty()
+            }
+            val name = row.optString("name").trim()
+            if (name.isBlank() || language.isBlank()) return@mapNotNull null
+            MessageTemplate(name, language, row.optString("category"), row.optString("header"),
+                row.optString("body"), row.optInt("header_variables"), row.optInt("variables"))
+        }
+    }
+
+    suspend fun sendTemplate(
+        conversationId: String,
+        template: MessageTemplate,
+        bodyParameters: List<String>,
+        headerParameters: List<String>
+    ): MessageSendReceipt {
+        val encodedId = URLEncoder.encode(conversationId, "UTF-8")
+        val path = settings.load().templateSendPath.replace("{id}", encodedId)
+        val body = JSONObject().put("name", template.name).put("language", template.language)
+            .put("parameters", JSONArray(bodyParameters)).put("header_parameters", JSONArray(headerParameters))
+        val result = request(path, "POST", body)
         return MessageSendReceipt(result.optString("id").takeIf { it.isNotBlank() }
             ?: throw ApiException(502, "A API não retornou o ID da mensagem."), result.optString("status"))
     }

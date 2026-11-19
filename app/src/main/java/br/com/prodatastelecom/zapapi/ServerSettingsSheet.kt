@@ -68,6 +68,8 @@ fun ServerSettingsSheet(
             SettingField("Listar conversas (GET)", draft.conversationsPath) { draft = draft.copy(conversationsPath = it) }
             SettingField("Mensagens da conversa (GET, {id})", draft.messagesPath) { draft = draft.copy(messagesPath = it) }
             SettingField("Enviar mensagem (POST, {id})", draft.sendPath) { draft = draft.copy(sendPath = it) }
+            SettingField("Templates aprovados (GET)", draft.templatesPath) { draft = draft.copy(templatesPath = it) }
+            SettingField("Enviar template (POST, {id})", draft.templateSendPath) { draft = draft.copy(templateSendPath = it) }
             SettingField("Iniciar conversa (POST)", draft.createPath) { draft = draft.copy(createPath = it) }
             SettingField("Listar contatos (reservado)", draft.contactsPath) { draft = draft.copy(contactsPath = it) }
             SettingField("Ler mídia da mensagem (GET, {id})", draft.mediaPath) { draft = draft.copy(mediaPath = it) }
