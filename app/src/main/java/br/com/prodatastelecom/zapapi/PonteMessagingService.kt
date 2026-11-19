@@ -1,7 +1,5 @@
 package br.com.prodatastelecom.zapapi
 
-import android.graphics.Bitmap
-import android.graphics.Canvas
 import android.app.PendingIntent
 import android.content.Intent
 import androidx.core.app.NotificationCompat
@@ -51,7 +49,7 @@ class PonteMessagingService : FirebaseMessagingService() {
             ?: "Nova mensagem recebida."
         val notification = NotificationCompat.Builder(this, "messages")
             .setSmallIcon(R.drawable.ic_stat_zapapi)
-            .setLargeIcon(notificationLargeIcon())
+            .setColor(ContextCompat.getColor(this, android.R.color.holo_green_dark))
             .setContentTitle(sender)
             .setContentText(preview)
             .setStyle(NotificationCompat.BigTextStyle().bigText(preview))
@@ -61,16 +59,6 @@ class PonteMessagingService : FirebaseMessagingService() {
             .build()
         val id = (System.currentTimeMillis() % Int.MAX_VALUE).toInt()
         NotificationManagerCompat.from(this).notify(id, notification)
-    }
-
-    private fun notificationLargeIcon(): Bitmap? {
-        val drawable = ContextCompat.getDrawable(this, R.drawable.ic_ponte) ?: return null
-        val size = (48 * resources.displayMetrics.density).toInt().coerceAtLeast(48)
-        return Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888).also { bitmap ->
-            val canvas = Canvas(bitmap)
-            drawable.setBounds(0, 0, size, size)
-            drawable.draw(canvas)
-        }
     }
 }
 
