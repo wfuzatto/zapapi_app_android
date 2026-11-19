@@ -9,6 +9,13 @@
         android:label="ZapApi Messenger"
         android:icon="@drawable/ic_ponte"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
+        <!-- FCM renders notification payloads itself while the app is in the background. -->
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_icon"
+            android:resource="@drawable/ic_stat_zapapi" />
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_color"
+            android:resource="@android:color/holo_green_dark" />
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -32,3 +39,4 @@
         </provider>
     </application>
 </manifest>
+
