@@ -708,7 +708,8 @@ private fun ZapTemplateDialog(
     AlertDialog(
         onDismissRequest = { if (!sending) onDismiss() },
         title = {
-            Text(if (current == null) "Templates aprovados" else "Enviar ${templateDisplayTitle(current.name)}",
+            Text(if (current == null) "Templates aprovados" else templateDisplayTitle(current.name),
+                fontSize = if (current == null) 24.sp else 20.sp,
                 maxLines = 2, overflow = TextOverflow.Ellipsis)
         },
         text = {
