@@ -460,7 +460,7 @@ private fun ChatScreen(chat: ChatSummary, api: PonteApi, lifecycle: Lifecycle,
         listState.scrollToItem(itemCount - 1)
     }
 
-    fun mergeChangedMessages(changed: List<ChatMessage>, atBottom: Boolean) {
+    suspend fun mergeChangedMessages(changed: List<ChatMessage>, atBottom: Boolean) {
         if (changed.isEmpty()) return
         val pendingByServerId = pendingServerIds.entries.associate { it.value to it.key }
         val merged = messages.toMutableList()
@@ -478,9 +478,7 @@ private fun ChatScreen(chat: ChatSummary, api: PonteApi, lifecycle: Lifecycle,
         }
         messages = merged.distinctBy { it.id }
             .sortedBy { it.id.toLongOrNull() ?: Long.MAX_VALUE }
-        if (atBottom && addedNew) scope.launch {
-            if (messages.isNotEmpty()) listState.animateScrollToItem(messages.lastIndex)
-        }
+        if (atBottom && addedNew) scrollToLatest(messages.size)
     }
 
     LaunchedEffect(chat.id, lifecycle) {
@@ -516,13 +514,14 @@ private fun ChatScreen(chat: ChatSummary, api: PonteApi, lifecycle: Lifecycle,
                             .maxOrNull()?.toString() ?: "0"
                         val statusIds = loaded.filter { it.direction == "outbound" }
                             .takeLast(50).map { it.id }
-                        val atBottom = firstFetch || listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index
+                        val atBottom = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index
                             ?.let { it >= messages.lastIndex - 1 } ?: true
                         val sync = api.syncMessages(
                             chat.id, afterId, statusIds, pendingServerIds.values.toSet()
                         )
                         sync.windowOpen?.let { windowOpen = it }
                         mergeChangedMessages(sync.messages, atBottom)
+                        if (firstFetch) scrollToLatest(messages.size)
                     }
                     firstFetch = false
                     error = null
@@ -612,7 +611,7 @@ private fun ChatScreen(chat: ChatSummary, api: PonteApi, lifecycle: Lifecycle,
                             time = LocalTime.now().toString().take(5), status = "pending", isPending = true
                         )
                         messages = messages + pending
-                        scope.launch { if (messages.isNotEmpty()) listState.animateScrollToItem(messages.lastIndex) }
+                        scope.launch { scrollToLatest(messages.size) }
                         scope.launch {
                             try {
                                 api.cachePendingMessage(chat.id, pending)
@@ -660,7 +659,7 @@ private fun ChatScreen(chat: ChatSummary, api: PonteApi, lifecycle: Lifecycle,
             api.attachPendingMessageId(chat.id, pendingId, receipt.id)
             pendingServerIds = pendingServerIds + (pendingId to receipt.id)
             error = null
-            scope.launch { if (messages.isNotEmpty()) listState.animateScrollToItem(messages.lastIndex) }
+            scope.launch { scrollToLatest(messages.size) }
         } catch (e: Exception) {
             try { api.removePendingMessage(chat.id, pendingId) } catch (_: Exception) { }
             messages = messages.filterNot { it.id == pendingId }
