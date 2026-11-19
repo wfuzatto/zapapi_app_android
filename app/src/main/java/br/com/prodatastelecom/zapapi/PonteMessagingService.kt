@@ -64,7 +64,7 @@ class PonteMessagingService : FirebaseMessagingService() {
         }
         val pendingIntent = PendingIntent.getActivity(this, tag.hashCode(), intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        val notification = NotificationCompat.Builder(this, "messages")
+        val notification = NotificationCompat.Builder(this, MESSAGE_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_zapapi)
             .setColor(ContextCompat.getColor(this, android.R.color.holo_green_dark))
             .setContentTitle(sender)
@@ -82,6 +82,7 @@ class PonteMessagingService : FirebaseMessagingService() {
         private const val STATE_PREFS = "zapapi_notification_read_state"
         private const val NOTIFICATION_ID = 0
         private const val LEGACY_NOTIFICATIONS_MIGRATED = "legacy_notifications_migrated"
+        const val MESSAGE_CHANNEL_ID = "messages_viber"
 
         private fun notificationState(context: Context) =
             context.getSharedPreferences(STATE_PREFS, Context.MODE_PRIVATE)
