@@ -433,6 +433,11 @@ private fun Avatar(name: String, chat: ChatSummary, api: PonteApi) {
     }
 }
 
+private fun templateDisplayTitle(name: String): String = name.replace(Regex("[_-]+"), " ").trim()
+    .split(Regex("\\s+")).joinToString(" ") {
+        it.replaceFirstChar { char -> char.titlecase(Locale("pt", "BR")) }
+    }
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ChatScreen(chat: ChatSummary, api: PonteApi, lifecycle: Lifecycle,
@@ -702,7 +707,10 @@ private fun ZapTemplateDialog(
         bodyValues.all { it.isNotBlank() } && headerValues.all { it.isNotBlank() }
     AlertDialog(
         onDismissRequest = { if (!sending) onDismiss() },
-        title = { Text(if (current == null) "Templates aprovados" else "Enviar ${current.name}") },
+        title = {
+            Text(if (current == null) "Templates aprovados" else "Enviar ${templateDisplayTitle(current.name)}",
+                maxLines = 2, overflow = TextOverflow.Ellipsis)
+        },
         text = {
             Column(
                 Modifier.fillMaxWidth().heightIn(max = 460.dp).verticalScroll(rememberScrollState()),
@@ -731,10 +739,8 @@ private fun ZapTemplateDialog(
                             contentPadding = PaddingValues(12.dp)
                         ) {
                             Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.Start) {
-                                Text(template.name.replace(Regex("[_-]+"), " ").trim()
-                                    .split(Regex("\\s+")).joinToString(" ") {
-                                        it.replaceFirstChar { char -> char.titlecase(Locale("pt", "BR")) }
-                                    }, fontWeight = FontWeight.SemiBold, color = Ink, maxLines = 1,
+                                Text(templateDisplayTitle(template.name), fontWeight = FontWeight.SemiBold,
+                                    color = Ink, maxLines = 1,
                                     overflow = TextOverflow.Ellipsis)
                             }
                         }
