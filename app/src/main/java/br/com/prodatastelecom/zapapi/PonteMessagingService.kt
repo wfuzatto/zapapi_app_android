@@ -1,6 +1,7 @@
 package br.com.prodatastelecom.zapapi
 
-import android.app.NotificationManager
+import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.app.PendingIntent
 import android.content.Intent
 import androidx.core.app.NotificationCompat
@@ -15,8 +16,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 /**
- * O backend envia apenas IDs de evento/tenant; nunca tokens ou textos privados no push.
- * Ao abrir, o aplicativo consulta a mensagem autenticada pelo HTTPS.
+ * O push contém apenas o nome do contato e uma prévia curta; o app consulta a mensagem
+ * completa pela API autenticada quando a conversa é aberta.
  */
 class PonteMessagingService : FirebaseMessagingService() {
     override fun onNewToken(token: String) {
@@ -30,7 +31,7 @@ class PonteMessagingService : FirebaseMessagingService() {
 
     override fun onMessageReceived(message: RemoteMessage) {
         super.onMessageReceived(message)
-        // Os IDs são apenas indicações para refresh; backend impõe sempre a autorização por tenant.
+        // O backend impõe o tenant e só envia uma prévia, nunca o conteúdo completo da conversa.
         val type = message.data["type"] ?: return
         if (type != "new_message") return
         if (SecureSession(this).read() == null) return
@@ -42,10 +43,18 @@ class PonteMessagingService : FirebaseMessagingService() {
         }
         val pendingIntent = PendingIntent.getActivity(this, 0, intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val sender = message.data["sender"]?.takeIf { it.isNotBlank() }
+            ?: message.notification?.title?.takeIf { it.isNotBlank() }
+            ?: "ZapApi"
+        val preview = message.data["preview"]?.takeIf { it.isNotBlank() }
+            ?: message.notification?.body?.takeIf { it.isNotBlank() }
+            ?: "Nova mensagem recebida."
         val notification = NotificationCompat.Builder(this, "messages")
-            .setSmallIcon(android.R.drawable.ic_dialog_email)
-            .setContentTitle("ZapApi • Nova mensagem")
-            .setContentText("Há uma nova mensagem para sua equipe.")
+            .setSmallIcon(R.drawable.ic_stat_zapapi)
+            .setLargeIcon(notificationLargeIcon())
+            .setContentTitle(sender)
+            .setContentText(preview)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(preview))
             .setAutoCancel(true)
             .setContentIntent(pendingIntent)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
@@ -53,4 +62,15 @@ class PonteMessagingService : FirebaseMessagingService() {
         val id = (System.currentTimeMillis() % Int.MAX_VALUE).toInt()
         NotificationManagerCompat.from(this).notify(id, notification)
     }
+
+    private fun notificationLargeIcon(): Bitmap? {
+        val drawable = ContextCompat.getDrawable(this, R.drawable.ic_ponte) ?: return null
+        val size = (48 * resources.displayMetrics.density).toInt().coerceAtLeast(48)
+        return Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888).also { bitmap ->
+            val canvas = Canvas(bitmap)
+            drawable.setBounds(0, 0, size, size)
+            drawable.draw(canvas)
+        }
+    }
 }
+
