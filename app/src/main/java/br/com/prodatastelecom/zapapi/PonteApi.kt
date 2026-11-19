@@ -29,7 +29,9 @@ data class ChatSummary(
     val preview: String,
     val time: String,
     val unread: Int,
-    val windowOpen: Boolean = true
+    val windowOpen: Boolean = true,
+    val hasPhoto: Boolean = false,
+    val photoVersion: String = ""
 )
 data class ChatMessage(
     val id: String,
@@ -212,7 +214,8 @@ class PonteApi(private val session: SecureSession, private val settings: ServerC
             val row = items.optJSONObject(i) ?: return@mapNotNull null
             ChatSummary(row.optString("id"), row.optString("name").ifBlank { row.optString("phone") },
                 row.optString("phone"), row.optString("last_message"), row.optString("updated_at"),
-                row.optInt("unread_count"), row.optBoolean("window_open", true))
+                row.optInt("unread_count"), row.optBoolean("window_open", true),
+                row.optBoolean("has_photo"), row.optString("photo_version"))
         }.filter { it.id.isNotBlank() }
     }
 
@@ -432,6 +435,73 @@ class PonteApi(private val session: SecureSession, private val settings: ServerC
                     if (!temp.renameTo(cached)) throw ApiException(500, "Não foi possível salvar a mídia no cache privado.")
                     trimMediaCache(cacheDir, cached)
                     MediaAttachment(cached, mime, filename)
+                } catch (e: Exception) {
+                    temp.delete()
+                    throw e
+                }
+            }
+        }
+
+    /** Baixa a foto do contato pelo endpoint autenticado e usa cache privado versionado. */
+    suspend fun downloadContactPhoto(conversationId: String, photoVersion: String): File? =
+        withContext(Dispatchers.IO) {
+            if (!Regex("^[1-9][0-9]*-[0-9]{7,20}$").matches(conversationId))
+                throw ApiException(400, "Conversa inválida para carregar a foto.")
+            val cfg = settings.load().normalized()
+            cfg.validate()?.let { throw ApiException(400, "Configurações: $it") }
+            val token = session.read() ?: throw ApiException(401, "Faça login novamente.")
+            val key = java.security.MessageDigest.getInstance("SHA-256")
+                .digest("$token:$conversationId:$photoVersion".toByteArray(Charsets.UTF_8))
+                .joinToString("") { "%02x".format(it) }
+            val cacheDir = File(session.appContext.cacheDir, "contact_photos")
+            if (!cacheDir.exists() && !cacheDir.mkdirs())
+                throw ApiException(500, "Não foi possível preparar o cache de fotos.")
+            val cached = File(cacheDir, "contact_$key.img")
+            if (cached.isFile && cached.length() > 0L) {
+                cached.setLastModified(System.currentTimeMillis())
+                return@withContext cached
+            }
+            val path = "contacts/$conversationId/photo"
+            val request = Request.Builder().url(cfg.endpoint(path))
+                .header("Accept", "image/jpeg,image/png,image/webp")
+                .header("Authorization", "Bearer $token").get().build()
+            client(cfg).newCall(request).execute().use { response ->
+                if (response.code == 404) return@withContext null
+                if (response.code in 300..399)
+                    throw ApiException(response.code, "A rota da foto redirecionou para ${safeLocation(response.header("Location"))}.")
+                if (!response.isSuccessful) {
+                    val raw = response.body?.string().orEmpty().take(1000)
+                    val detail = try { JSONObject(raw).optString("error").ifBlank { "Erro HTTP ${response.code}" } }
+                        catch (_: Exception) { "Erro HTTP ${response.code}" }
+                    throw ApiException(response.code, detail.take(260))
+                }
+                val mime = response.header("Content-Type").orEmpty().substringBefore(';').trim().lowercase()
+                if (mime !in setOf("image/jpeg", "image/png", "image/webp"))
+                    throw ApiException(502, "A API retornou um formato de foto inválido.")
+                val body = response.body ?: throw ApiException(502, "A resposta da foto veio vazia.")
+                if (body.contentLength() > 2L * 1024L * 1024L)
+                    throw ApiException(413, "A foto excede o limite permitido.")
+                val temp = File.createTempFile("contact_${key}_", ".part", cacheDir)
+                try {
+                    var total = 0L
+                    body.byteStream().use { input ->
+                        FileOutputStream(temp).buffered().use { output ->
+                            val buffer = ByteArray(8 * 1024)
+                            while (true) {
+                                val count = input.read(buffer)
+                                if (count < 0) break
+                                total += count
+                                if (total > 2L * 1024L * 1024L)
+                                    throw ApiException(413, "A foto excede o limite permitido.")
+                                output.write(buffer, 0, count)
+                            }
+                        }
+                    }
+                    if (total == 0L) throw ApiException(502, "A foto do contato veio vazia.")
+                    if (!temp.renameTo(cached)) throw ApiException(500, "Não foi possível salvar a foto em cache.")
+                    cacheDir.listFiles()?.filter { it.isFile && it.name.startsWith("contact_") }
+                        ?.sortedByDescending { it.lastModified() }?.drop(100)?.forEach { it.delete() }
+                    cached
                 } catch (e: Exception) {
                     temp.delete()
                     throw e

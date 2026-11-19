@@ -70,6 +70,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.distinctUntilChanged
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import java.io.File
 import java.time.LocalTime
 import java.util.Locale
@@ -346,7 +347,7 @@ private fun HomeScreen(api: PonteApi, refreshKey: Int, lifecycle: Lifecycle, onC
                         items(shown, key = { it.id }) { chat ->
                             Row(Modifier.fillMaxWidth().clickable { onChat(chat) }.padding(14.dp),
                                 verticalAlignment = Alignment.CenterVertically) {
-                                Avatar(chat.name)
+                                Avatar(chat.name, chat, api)
                                 Spacer(Modifier.width(12.dp))
                                 Column(Modifier.weight(1f)) {
                                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -406,9 +407,29 @@ private fun HomeScreen(api: PonteApi, refreshKey: Int, lifecycle: Lifecycle, onC
 }
 
 @Composable
-private fun Avatar(name: String) {
+private fun Avatar(name: String, chat: ChatSummary, api: PonteApi) {
+    val photo by produceState<ImageBitmap?>(initialValue = null, chat.id, chat.photoVersion, chat.hasPhoto) {
+        if (chat.hasPhoto) {
+            value = try {
+                val file = api.downloadContactPhoto(chat.id, chat.photoVersion)
+                file?.let {
+                    withContext(Dispatchers.IO) {
+                        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                        BitmapFactory.decodeFile(it.absolutePath, bounds)
+                        var sample = 1
+                        while (bounds.outWidth / sample > 240 || bounds.outHeight / sample > 240) sample *= 2
+                        BitmapFactory.decodeFile(it.absolutePath, BitmapFactory.Options().apply {
+                            inSampleSize = sample
+                        })?.asImageBitmap()
+                    }
+                }
+            } catch (_: Exception) { null }
+        }
+    }
     Box(Modifier.size(49.dp).clip(CircleShape).background(Color(0xFFE4F1EA)), contentAlignment = Alignment.Center) {
         Text(name.take(1).uppercase(), fontWeight = FontWeight.Bold, fontSize = 21.sp, color = Green)
+        if (photo != null) Image(photo!!, contentDescription = "Foto de ${chat.name}",
+            contentScale = ContentScale.Crop, modifier = Modifier.matchParentSize())
     }
 }
 
@@ -430,6 +451,14 @@ private fun ChatScreen(chat: ChatSummary, api: PonteApi, lifecycle: Lifecycle,
     var showTemplate by remember(chat.id) { mutableStateOf(false) }
     var showInfo by remember(chat.id) { mutableStateOf(false) }
     val listState = rememberLazyListState()
+
+    suspend fun scrollToLatest(itemCount: Int) {
+        if (itemCount <= 0) return
+        yield()
+        listState.scrollToItem(itemCount - 1)
+        withFrameNanos { }
+        listState.scrollToItem(itemCount - 1)
+    }
 
     fun mergeChangedMessages(changed: List<ChatMessage>, atBottom: Boolean) {
         if (changed.isEmpty()) return
@@ -463,8 +492,7 @@ private fun ChatScreen(chat: ChatSummary, api: PonteApi, lifecycle: Lifecycle,
             hasMoreOlder = cached.hasMore
             if (cached.messages.any { !it.isPending }) {
                 // Put the existing SQLite page on screen at once, before network synchronization.
-                yield()
-                listState.scrollToItem(cached.messages.lastIndex)
+                scrollToLatest(cached.messages.size)
                 initialScrollDone = true
             }
         } catch (_: Exception) { }
@@ -480,7 +508,7 @@ private fun ChatScreen(chat: ChatSummary, api: PonteApi, lifecycle: Lifecycle,
                             .sortedBy { it.id.toLongOrNull() ?: Long.MAX_VALUE }
                         hasMoreOlder = page.hasMore
                         page.windowOpen?.let { windowOpen = it }
-                        if (messages.isNotEmpty()) listState.scrollToItem(messages.lastIndex)
+                        scrollToLatest(messages.size)
                         initialScrollDone = true
                     } else {
                         val loaded = messages.filterNot { it.isPending }
@@ -488,7 +516,7 @@ private fun ChatScreen(chat: ChatSummary, api: PonteApi, lifecycle: Lifecycle,
                             .maxOrNull()?.toString() ?: "0"
                         val statusIds = loaded.filter { it.direction == "outbound" }
                             .takeLast(50).map { it.id }
-                        val atBottom = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index
+                        val atBottom = firstFetch || listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index
                             ?.let { it >= messages.lastIndex - 1 } ?: true
                         val sync = api.syncMessages(
                             chat.id, afterId, statusIds, pendingServerIds.values.toSet()
@@ -541,7 +569,7 @@ private fun ChatScreen(chat: ChatSummary, api: PonteApi, lifecycle: Lifecycle,
         Row(Modifier.fillMaxWidth().background(Color(0xFF053D30)).padding(8.dp),
             verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Voltar",tint=Color.White) }
-            Box(Modifier.clickable{showInfo=true}){ Avatar(chat.name) }
+            Box(Modifier.clickable{showInfo=true}){ Avatar(chat.name, chat, api) }
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
                 Text(chat.name,fontWeight=FontWeight.SemiBold,color=Color.White,
@@ -704,12 +732,11 @@ private fun ZapTemplateDialog(
                             contentPadding = PaddingValues(12.dp)
                         ) {
                             Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.Start) {
-                                Text(template.name, fontWeight = FontWeight.SemiBold, color = Ink)
-                                Text("${template.language} • ${template.category.ifBlank { "Aprovado" }}",
-                                    color = Color.Gray, fontSize = 11.sp)
-                                if (template.body.isNotBlank())
-                                    Text(template.body, color = Ink, fontSize = 12.sp, maxLines = 3,
-                                        overflow = TextOverflow.Ellipsis)
+                                Text(template.name.replace(Regex("[_-]+"), " ").trim()
+                                    .split(Regex("\\s+")).joinToString(" ") {
+                                        it.replaceFirstChar { char -> char.titlecase(Locale("pt", "BR")) }
+                                    }, fontWeight = FontWeight.SemiBold, color = Ink, maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis)
                             }
                         }
                     }
